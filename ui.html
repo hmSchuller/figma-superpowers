@@ -128,7 +128,7 @@
 
   <hr />
 
-  <label>Work with Gemini</label>
+  <label>Work with AI</label>
   <button id="contextBtn" class="bake" disabled>Copy Design Context</button>
 
   <hr />
@@ -170,7 +170,7 @@
       } else {
         try {
           await copyTextToClipboard(PRIMING_PAYLOAD_CACHE);
-          alert("🟢 System context copied! Paste it into a new Gemini Web tab.");
+          alert("🟢 System context copied! Paste it into a new AI chat tab.");
           PRIMING_PAYLOAD_CACHE = "";
           setupBtn.className = "setup";
           setupBtn.innerText = "1. Scan Project Library";
@@ -220,7 +220,7 @@ Pair this data package with your layout adjustment instruction.`;
         smartPasteField.value = "Executing script...";
         smartPasteField.style.borderColor = "#14ae5c";
 
-        parent.postMessage({ pluginMessage: { type: 'RUN_GEMINI_CODE', code: extractedCode } }, '*');
+        parent.postMessage({ pluginMessage: { type: 'RUNUserCode', code: extractedCode } }, '*');
 
         setTimeout(() => {
           smartPasteField.value = "";
