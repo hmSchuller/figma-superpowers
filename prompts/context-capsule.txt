@@ -1,0 +1,9 @@
+=== FIGMA CONTEXT CAPSULE ===
+[TARGET PARENT FRAME DATA]
+{{TARGET_DATA}}
+
+[ACTIVE CANVAS ENVIRONMENT]
+Current Page: "{{PAGE_NAME}}"
+Targeting State: {{TARGETING_STATE}}
+=============================
+Pair this data package with your layout adjustment instruction.
