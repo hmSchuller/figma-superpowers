@@ -1,0 +1,16 @@
+{
+  "name": "Figma<3Gemini",
+  "id": "1641734303540361085",
+  "api": "1.0.0",
+  "main": "code.js",
+  "capabilities": [],
+  "editorType": [
+    "figma"
+  ],
+  "ui": "ui.html",
+  "networkAccess": {
+    "allowedDomains": [
+      "none"
+    ]
+  }
+}
