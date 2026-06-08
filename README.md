@@ -1,40 +1,62 @@
-Below are the steps to get your plugin running. You can also find instructions at:
+# Figma Superpowers
 
-  https://www.figma.com/plugin-docs/plugin-quickstart-guide/
+A Figma plugin that bridges your design system with AI chat assistants. Extract your component catalog, design tokens, and variable collections into structured prompts, then paste AI-generated code back into Figma to execute layout modifications.
 
-This plugin template uses Typescript and NPM, two standard tools in creating JavaScript applications.
+## How It Works
 
-First, download Node.js which comes with NPM. This will allow you to install TypeScript and other
-libraries. You can find the download link here:
+1. **Scan Project Library** — Extracts components, design tokens, and variable collections into a system prompt copied to your clipboard.
+2. **Paste into AI Chat** — Paste the system prompt into your preferred AI assistant (Gemini, ChatGPT, Claude, etc.), then describe a design change.
+3. **Copy Design Context** — Back in Figma, select target layers and copy the selection context.
+4. **Paste Generated Code** — Paste the AI's response into the plugin's paste field. It extracts JavaScript code and executes it against your Figma document.
 
-  https://nodejs.org/en/download/
+## Project Structure
 
-Next, install TypeScript using the command:
+```
+figma-superpowers/
+├── code.js            # Plugin backend — Figma API calls, node serialization, code execution
+├── ui.html            # Plugin UI — buttons, paste field, prompt assembly
+├── manifest.json      # Figma plugin manifest
+├── package.json       # Dev dependencies (ESLint, TypeScript, Figma typings)
+├── prompts/
+│   ├── system-prompt.txt       # System prompt template (source of truth)
+│   └── context-capsule.txt     # Selection context template (source of truth)
+└── README.md
+```
 
-  npm install -g typescript
+## Setup
 
-Finally, in the directory of your plugin, get the latest type definitions for the plugin API by running:
+1. Download the latest release and unzip it
+2. In Figma, go to **Plugins > Development > Import plugin from manifest**
+3. Select the `manifest.json` file from the unzipped folder
 
-  npm install --save-dev @figma/plugin-typings
+That's it — no compilation or build step required. The plugin runs on pure JavaScript.
 
-If you are familiar with JavaScript, TypeScript will look very familiar. In fact, valid JavaScript code
-is already valid Typescript code.
+## Prompts
 
-TypeScript adds type annotations to variables. This allows code editors such as Visual Studio Code
-to provide information about the Figma API while you are writing code, as well as help catch bugs
-you previously didn't notice.
+The prompts in `prompts/` use placeholder syntax for dynamic values:
 
-For more information, visit https://www.typescriptlang.org/
+| Placeholder | Description |
+|---|---|
+| `{{MANIFEST}}` | Component catalog JSON |
+| `{{VARIABLES}}` | Design tokens JSON |
+| `{{COLLECTIONS}}` | Variable collections JSON |
+| `{{TARGET_DATA}}` | Selection or null |
+| `{{PAGE_NAME}}` | Current Figma page name |
+| `{{TARGETING_STATE}}` | `GLOBAL PAGE SCOPE` or `LOCAL SELECTION BOUNDS` |
 
-Using TypeScript requires a compiler to convert TypeScript (code.ts) into JavaScript (code.js)
-for the browser to run.
+Edit the `.txt` files to customize prompts. The plugin reads them as template constants at runtime.
 
-We recommend writing TypeScript code using Visual Studio code:
+## Development
 
-1. Download Visual Studio Code if you haven't already: https://code.visualstudio.com/.
-2. Open this directory in Visual Studio Code.
-3. Compile TypeScript to JavaScript: Run the "Terminal > Run Build Task..." menu item,
-    then select "npm: watch". You will have to do this again every time
-    you reopen Visual Studio Code.
+The plugin is pure JavaScript — no compilation needed. Edit `code.js` or `ui.html` directly.
 
-That's it! Visual Studio Code will regenerate the JavaScript file every time you save.
+For linting:
+
+```bash
+npm install
+npm run lint
+```
+
+## License
+
+MIT
