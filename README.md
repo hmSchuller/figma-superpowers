@@ -5,9 +5,9 @@ A Figma plugin that bridges your design system with AI chat assistants. Extract 
 ## How It Works
 
 1. **Scan Project Library** — Extracts components, design tokens, and variable collections into a system prompt copied to your clipboard.
-2. **Paste into AI Chat** — Paste the system prompt into your preferred AI assistant (Gemini, ChatGPT, Claude, etc.), then describe a design change.
-3. **Copy Design Context** — Back in Figma, select target layers and copy the selection context.
-4. **Paste Generated Code** — Paste the AI's response into the plugin's paste field. It extracts JavaScript code and executes it against your Figma document.
+2. **Ask or Plan in AI Chat** — Paste the system prompt into your preferred AI assistant (Gemini, ChatGPT, Claude, etc.) and ask design-system questions, request critique, plan implementation, or describe a possible design change.
+3. **Copy Design Context When Needed** — Back in Figma, select target layers and copy the selection context when you want canvas-specific advice or executable changes.
+4. **Generate and Paste Code** — When you are ready, ask the AI to generate executable Figma code, then paste the response into the plugin's paste field. It extracts JavaScript code and executes it against your Figma document.
 
 ## Project Structure
 
@@ -43,6 +43,8 @@ The prompts in `prompts/` use placeholder syntax for dynamic values:
 | `{{TARGET_DATA}}` | Selection or null |
 | `{{PAGE_NAME}}` | Current Figma page name |
 | `{{TARGETING_STATE}}` | `GLOBAL PAGE SCOPE` or `LOCAL SELECTION BOUNDS` |
+
+The setup prompt is enough for general consulting. Use the context capsule when the assistant needs current page or selection data for canvas-specific critique, planning, or execution.
 
 Edit the `.txt` files to customize prompts. The plugin reads them as template constants at runtime.
 
