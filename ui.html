@@ -64,6 +64,27 @@
       background: #1e1e1e;
     }
 
+    .status-tag {
+      font-size: 10px;
+      font-weight: bold;
+      padding: 4px 6px;
+      border-radius: 4px;
+      text-align: center;
+      display: none;
+    }
+
+    .status-tag.explorative {
+      background: #fff3cd;
+      color: #856404;
+      display: block;
+    }
+
+    .status-tag.standard {
+      background: #d4edda;
+      color: #155724;
+      display: block;
+    }
+
     .paste-zone {
       width: 100%;
       box-sizing: border-box;
@@ -91,7 +112,6 @@
       font-size: 10px;
       text-align: left;
       text-transform: none;
-      font-weight: normal;
     }
 
     hr {
@@ -118,8 +138,9 @@
 
 <body>
 
-  <label>Sync Environment</label>
-  <button id="setupBtn" class="setup">Scan Project Library</button>
+  <label>Environment Sync</label>
+  <button id="setupBtn" class="setup">Evaluate & Scan File</button>
+  <div id="statusTag" class="status-tag"></div>
 
   <hr />
 
@@ -128,62 +149,60 @@
 
   <hr />
 
-  <label>Deploy or Query</label>
+  <label>Tooling Clipboard Bridge</label>
   <textarea id="smartPasteField" class="paste-zone" rows="1" placeholder="Click here & Paste (Cmd+V)"></textarea>
 
   <script>
-    const SYSTEM_PROMPT_TEMPLATE = `=== FIGMA SYSTEM INITIALIZATION ===
-You are acting as an interactive Design System Consultant and Figma Plugin Tooling Compiler.
-Below is the Master Component Index and Variable Library for this project.
+    const STANDARD_PROMPT_TEMPLATE = `=== FIGMA SYSTEM INITIALIZATION (STANDARD MODE) ===
+You are an interactive Design System Consultant and Plugin API Execution Engine.
 
-[MASTER COMPONENT INDEX]
+[COMPONENT INDEX]
 {{MANIFEST}}
 
-[DESIGN TOKEN & VARIABLE COLLECTIONS]
+[VARIABLE COLLECTIONS]
 {{VARIABLES}}
 
+Execute operations by returning single \`\`\`javascript blocks or query canvas details dynamically using \`return\` statements.`;
+
+    const EXPLORATIVE_PROMPT_TEMPLATE = `=== FIGMA SYSTEM INITIALIZATION (EXPLORATIVE LAZY MODE) ===
+⚠️ LARGE FILE DETECTED: Global context pre-loading was bypassed to preserve memory.
+You are connected via an interactive two-way tooling interface.
+
+[FILE MAP SKELETON]
+- Pages Available: {{PAGES}}
+- Variable Collections: {{COLLECTIONS}}
+
 ==================================================
-OPERATIONAL RULES:
+EXPLORATIVE OPERATIONAL RULES:
 ==================================================
-1. TWO-WAY TOOLING EXECUTION: You can inspect the canvas dynamically. If you need more detail on a specific component, node structure, or variable value, output an inspection query script inside a \`\`\`javascript code block ending with a \`return\` statement. The user will paste it into the plugin, and the answer will be copied to their clipboard to paste back to you.
+1. You currently have NO canvas node pre-loaded.
+2. To inspect components, layers, or variables, write a lightweight inspection script ending with a \`return\` statement inside a \`\`\`javascript block.
+3. The user will execute it in the plugin and paste the output back to you.
 
-   Example Context Query:
-   \`\`\`javascript
-   const sel = figma.currentPage.selection[0];
-   return { name: sel.name, fills: sel.fills, childrenCount: sel.children.length };
-   \`\`\`
-
-2. DESIGN SYSTEM CONSULTATION: When asked for advice, critique, or recommendations, respond directly in clear Markdown. Propose matching tokens or components from the catalog.
-
-3. CANVAS MODIFICATION & EXECUTION: When explicitly asked to generate layout updates or create nodes, output a single, executable \`\`\`javascript block.
-
-CRITICAL FIGMA API CODE RULES:
-- Access target nodes via: const targetNode = figma.currentPage.selection[0];
-- Binding paint tokens (Fills/Strokes) MUST use array cloning and setBoundVariableForPaint:
-  function deepCopy(val) { return JSON.parse(JSON.stringify(val)); }
-  const fillsCopy = deepCopy(targetNode.fills);
-  fillsCopy[0] = figma.variables.setBoundVariableForPaint(fillsCopy[0], 'color', colorToken);
-  targetNode.fills = fillsCopy;
-- ES6 COMPATIBILITY ONLY: NEVER use optional chaining (?.) or nullish coalescing (??).
-`;
-
-    const CONTEXT_CAPSULE_TEMPLATE = `=== FIGMA CONTEXT CAPSULE ===
-[TARGET LAYOUT STRUCTURE]
-{{TARGET_DATA}}
-
-[CANVAS STATE]
-Current Page: "{{PAGE_NAME}}"
-Scope: {{TARGETING_STATE}}
-=============================`;
+EXEMPLAR DISCOVERY QUERIES:
+- Find components on page:
+  \`\`\`javascript
+  return figma.currentPage.findAllWithCriteria({ types: ["COMPONENT"] }).map(c => c.name);
+  \`\`\`
+- Get details on selected element:
+  \`\`\`javascript
+  const sel = figma.currentPage.selection[0];
+  return { name: sel.name, type: sel.type, fills: sel.fills };
+  \`\`\`
+- Read variable collection tokens:
+  \`\`\`javascript
+  const cols = await figma.variables.getLocalVariableCollectionsAsync();
+  const vars = await figma.variables.getLocalVariablesAsync();
+  return { collections: cols.map(c => c.name), totalVars: vars.length };
+  \`\`\``;
 
     const setupBtn = document.getElementById('setupBtn');
     const contextBtn = document.getElementById('contextBtn');
     const smartPasteField = document.getElementById('smartPasteField');
+    const statusTag = document.getElementById('statusTag');
 
     let PRIMING_PAYLOAD_CACHE = "";
     let LIVE_SELECTION_MD = null;
-    let IS_GLOBAL_MODE = true;
-    let ACTIVE_PAGE_NAME = "";
 
     function copyTextToClipboard(text) {
       const textArea = document.createElement("textarea");
@@ -203,66 +222,41 @@ Scope: {{TARGETING_STATE}}
 
     setupBtn.onclick = async () => {
       if (!PRIMING_PAYLOAD_CACHE) {
-        setupBtn.innerText = "Scanning project environment...";
+        setupBtn.innerText = "Evaluating file metrics...";
         setupBtn.disabled = true;
         parent.postMessage({ pluginMessage: { type: 'GENERATE_DYNAMIC_PRIMING_PROMPT' } }, '*');
       } else {
-        try {
-          await copyTextToClipboard(PRIMING_PAYLOAD_CACHE);
-          alert("🟢 System context copied! Paste it into your AI chat.");
-          PRIMING_PAYLOAD_CACHE = "";
-          setupBtn.className = "setup";
-          setupBtn.innerText = "Scan Project Library";
-        } catch (err) {
-          alert("Error: " + err.message);
-        }
+        await copyTextToClipboard(PRIMING_PAYLOAD_CACHE);
+        alert("🟢 Prompt copied! Paste into AI webchat.");
+        PRIMING_PAYLOAD_CACHE = "";
+        setupBtn.className = "setup";
+        setupBtn.innerText = "Evaluate & Scan File";
+        statusTag.className = "status-tag";
       }
     };
 
     contextBtn.onclick = async () => {
-      const targetDataString = IS_GLOBAL_MODE
-        ? "No layer selected. Operating globally on page scope."
-        : LIVE_SELECTION_MD;
-
-      const finalPayload = CONTEXT_CAPSULE_TEMPLATE
-        .replace("{{TARGET_DATA}}", targetDataString)
-        .replace("{{PAGE_NAME}}", ACTIVE_PAGE_NAME)
-        .replace("{{TARGETING_STATE}}", IS_GLOBAL_MODE ? "GLOBAL PAGE SCOPE" : "LOCAL SELECTION BOUNDS");
-
-      try {
-        await copyTextToClipboard(finalPayload);
-        alert(IS_GLOBAL_MODE ? "🌐 Global Page context copied!" : "🚀 Selection context copied!");
-      } catch (err) {
-        alert("Copy error: " + err.message);
-      }
+      const textToCopy = LIVE_SELECTION_MD || "No element selected. Select a frame in Figma to pass local context.";
+      await copyTextToClipboard("=== FIGMA SELECTION CONTEXT ===\n" + textToCopy);
+      alert("🚀 Selection context copied!");
     };
 
     smartPasteField.onpaste = async (e) => {
       const pastedText = (e.clipboardData || window.clipboardData).getData('text').trim();
 
       let extractedCode = "";
-      const codeBlockRegex = /```javascript([\s\S]*?)```/;
-      const match = pastedText.match(codeBlockRegex);
+      const match = pastedText.match(/```javascript([\s\S]*?)```/);
 
       if (match && match[1]) {
         extractedCode = match[1].trim();
-      } else if (pastedText.includes("figma") || pastedText.startsWith("return") || pastedText.startsWith("(async")) {
+      } else if (pastedText.includes("figma") || pastedText.startsWith("return")) {
         extractedCode = pastedText.replace(/```javascript|```/g, "").trim();
       }
 
       if (extractedCode) {
-        smartPasteField.value = "Processing script...";
-        smartPasteField.style.borderColor = "#14ae5c";
-
+        smartPasteField.value = "Running script...";
         parent.postMessage({ pluginMessage: { type: 'RUNUserCode', code: extractedCode } }, '*');
-
-        setTimeout(() => {
-          smartPasteField.value = "";
-          smartPasteField.blur();
-        }, 800);
-      } else {
-        alert("⚠️ No valid JavaScript code block detected in clipboard.");
-        setTimeout(() => { smartPasteField.value = ""; }, 10);
+        setTimeout(() => { smartPasteField.value = ""; smartPasteField.blur(); }, 800);
       }
     };
 
@@ -270,33 +264,34 @@ Scope: {{TARGETING_STATE}}
       const msg = event.data.pluginMessage;
 
       if (msg.type === 'PRIMING_DATA_READY') {
-        PRIMING_PAYLOAD_CACHE = SYSTEM_PROMPT_TEMPLATE
-          .replace("{{MANIFEST}}", msg.manifestMd)
-          .replace("{{VARIABLES}}", msg.variablesMd);
+        if (msg.mode === "EXPLORATIVE") {
+          PRIMING_PAYLOAD_CACHE = EXPLORATIVE_PROMPT_TEMPLATE
+            .replace("{{PAGES}}", msg.pageNames.join(", "))
+            .replace("{{COLLECTIONS}}", msg.collectionsSummary.join(", "));
+          statusTag.innerText = "🔍 Large File: Explorative Mode Active";
+          statusTag.className = "status-tag explorative";
+        } else {
+          PRIMING_PAYLOAD_CACHE = STANDARD_PROMPT_TEMPLATE
+            .replace("{{MANIFEST}}", msg.manifestMd)
+            .replace("{{VARIABLES}}", msg.variablesMd);
+          statusTag.innerText = "⚡ Standard Mode Active";
+          statusTag.className = "status-tag standard";
+        }
 
         setupBtn.disabled = false;
         setupBtn.className = "setup ready";
-        setupBtn.innerText = "Copy System Prompt (Ready)";
+        setupBtn.innerText = "Copy Prompt for AI";
       }
 
       if (msg.type === 'SELECTION_UPDATED') {
         LIVE_SELECTION_MD = msg.nodeMarkdown;
-        ACTIVE_PAGE_NAME = msg.pageName || "Active Workspace";
         contextBtn.disabled = false;
-
-        if (LIVE_SELECTION_MD) {
-          IS_GLOBAL_MODE = false;
-          contextBtn.innerText = "Copy Selection Context";
-        } else {
-          IS_GLOBAL_MODE = true;
-          contextBtn.innerText = "Copy Page Scope Context";
-        }
+        contextBtn.innerText = LIVE_SELECTION_MD ? "Copy Selection Context" : "Copy Canvas State";
       }
 
       if (msg.type === 'EXECUTION_RESULT') {
-        const payload = "=== FIGMA TOOL RESPONSE ===\n" + msg.data;
-        await copyTextToClipboard(payload);
-        alert("📋 Query result copied to clipboard! Paste it directly back to your AI chat.");
+        await copyTextToClipboard("=== FIGMA TOOL RESPONSE ===\n" + msg.data);
+        alert("📋 Tool result copied! Paste back into your AI chat.");
       }
     };
   </script>
