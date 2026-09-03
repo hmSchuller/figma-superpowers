@@ -153,6 +153,27 @@
   <textarea id="smartPasteField" class="paste-zone" rows="1" placeholder="Click here & Paste (Cmd+V)"></textarea>
 
   <script>
+    const SYSTEM_RULES_HEADER = `
+==================================================
+STRICT CODE GENERATION & EXECUTION RULES:
+==================================================
+1. SELECTION CONTEXT FEATURE PREFERENCE:
+   - The user has a native "Copy Selection Context" button in their Figma plugin interface.
+   - If you need to inspect, review, or analyze the layout, styles, or layer tree of an element the user is currently looking at or working on, DO NOT generate a [READ-ONLY] JavaScript code snippet to read figma.currentPage.selection.
+   - Instead, ask the user to select the element and click "Copy Selection Context" in the plugin, then paste the context capsule into this chat.
+   - Only generate [READ-ONLY] JavaScript queries when you need to search across unselected pages, find components globally by name, or extract variable details that cannot be covered by a direct canvas selection.
+
+2. ACTION TYPE & EXPECTED OUTCOME FLAG:
+   Immediately before ANY \`\`\`javascript code block, you MUST state the action type and expected outcome:
+   - **Action Type**: [READ-ONLY] or [WRITE/MUTATION]
+   - **Expected Outcome**: [e.g., "Copy layer hierarchy to clipboard" | "Component adjusted" | "New component created"]
+
+3. ZERO PLACEHOLDERS / "AS IS" EXECUTION GUARANTEE:
+   - All code inside \`\`\`javascript MUST execute immediately "as is" when pasted.
+   - NEVER output code with generic placeholders (e.g., "YOUR_NODE_ID_HERE", "<component-name>", "/* insert token here */").
+   - If missing target IDs or parameters, write a dynamic query first (e.g., figma.currentPage.findOne(...)), operate on figma.currentPage.selection[0], or ask the user to select the frame and click "Copy Selection Context" BEFORE generating code.
+`;
+
     const STANDARD_PROMPT_TEMPLATE = `=== FIGMA SYSTEM INITIALIZATION (STANDARD MODE) ===
 You are an interactive Design System Consultant and Plugin API Execution Engine.
 
@@ -161,40 +182,17 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
 
 [VARIABLE COLLECTIONS]
 {{VARIABLES}}
-
-Execute operations by returning single \`\`\`javascript blocks or query canvas details dynamically using \`return\` statements.`;
+` + SYSTEM_RULES_HEADER;
 
     const EXPLORATIVE_PROMPT_TEMPLATE = `=== FIGMA SYSTEM INITIALIZATION (EXPLORATIVE LAZY MODE) ===
-⚠️ LARGE FILE DETECTED: Global context pre-loading was bypassed to preserve memory.
-You are connected via an interactive two-way tooling interface.
+⚠️ LARGE FILE DETECTED: Global context pre-loading bypassed to protect memory.
 
 [FILE MAP SKELETON]
 - Pages Available: {{PAGES}}
 - Variable Collections: {{COLLECTIONS}}
-
-==================================================
-EXPLORATIVE OPERATIONAL RULES:
-==================================================
-1. You currently have NO canvas node pre-loaded.
-2. To inspect components, layers, or variables, write a lightweight inspection script ending with a \`return\` statement inside a \`\`\`javascript block.
-3. The user will execute it in the plugin and paste the output back to you.
-
-EXEMPLAR DISCOVERY QUERIES:
-- Find components on page:
-  \`\`\`javascript
-  return figma.currentPage.findAllWithCriteria({ types: ["COMPONENT"] }).map(c => c.name);
-  \`\`\`
-- Get details on selected element:
-  \`\`\`javascript
-  const sel = figma.currentPage.selection[0];
-  return { name: sel.name, type: sel.type, fills: sel.fills };
-  \`\`\`
-- Read variable collection tokens:
-  \`\`\`javascript
-  const cols = await figma.variables.getLocalVariableCollectionsAsync();
-  const vars = await figma.variables.getLocalVariablesAsync();
-  return { collections: cols.map(c => c.name), totalVars: vars.length };
-  \`\`\``;
+` + SYSTEM_RULES_HEADER + `
+4. EXPLORATIVE DISCOVERY METHOD:
+   You currently have no pre-loaded layer nodes. Prefer asking the user to select a target frame and click "Copy Selection Context". If global page searches are required, emit lightweight [READ-ONLY] query scripts ending with a \`return\` statement.`;
 
     const setupBtn = document.getElementById('setupBtn');
     const contextBtn = document.getElementById('contextBtn');
@@ -227,7 +225,7 @@ EXEMPLAR DISCOVERY QUERIES:
         parent.postMessage({ pluginMessage: { type: 'GENERATE_DYNAMIC_PRIMING_PROMPT' } }, '*');
       } else {
         await copyTextToClipboard(PRIMING_PAYLOAD_CACHE);
-        alert("🟢 Prompt copied! Paste into AI webchat.");
+        alert("🟢 System prompt copied! Paste into AI webchat.");
         PRIMING_PAYLOAD_CACHE = "";
         setupBtn.className = "setup";
         setupBtn.innerText = "Evaluate & Scan File";
@@ -236,7 +234,7 @@ EXEMPLAR DISCOVERY QUERIES:
     };
 
     contextBtn.onclick = async () => {
-      const textToCopy = LIVE_SELECTION_MD || "No element selected. Select a frame in Figma to pass local context.";
+      const textToCopy = LIVE_SELECTION_MD || "No layer selected. Select a frame in Figma to pass local context.";
       await copyTextToClipboard("=== FIGMA SELECTION CONTEXT ===\n" + textToCopy);
       alert("🚀 Selection context copied!");
     };
@@ -254,7 +252,7 @@ EXEMPLAR DISCOVERY QUERIES:
       }
 
       if (extractedCode) {
-        smartPasteField.value = "Running script...";
+        smartPasteField.value = "Executing script...";
         parent.postMessage({ pluginMessage: { type: 'RUNUserCode', code: extractedCode } }, '*');
         setTimeout(() => { smartPasteField.value = ""; smartPasteField.blur(); }, 800);
       }
@@ -280,7 +278,7 @@ EXEMPLAR DISCOVERY QUERIES:
 
         setupBtn.disabled = false;
         setupBtn.className = "setup ready";
-        setupBtn.innerText = "Copy Prompt for AI";
+        setupBtn.innerText = "Copy System Prompt";
       }
 
       if (msg.type === 'SELECTION_UPDATED') {

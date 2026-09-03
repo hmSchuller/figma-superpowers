@@ -1,4 +1,4 @@
-figma.showUI(__html__, { width: 340, height: 340, title: "Superpowers Hub" });
+figma.showUI(__html__, { width: 240, height: 340, title: "Superpowers Hub" });
 
 const SAFETY_LIMITS = {
   MAX_PAGES: 8,
@@ -73,7 +73,7 @@ figma.on("selectionchange", pushCurrentSelection);
 pushCurrentSelection();
 
 figma.ui.onmessage = async function (msg) {
-  // --- PRE-FLIGHT CHECK & CONDITIONAL INDEXING ---
+  // PRE-FLIGHT CHECK & CONDITIONAL INDEXING
   if (msg.type === "GENERATE_DYNAMIC_PRIMING_PROMPT") {
     const pageCount = figma.root.children.length;
     let isHugeFile = pageCount > SAFETY_LIMITS.MAX_PAGES;
@@ -86,7 +86,6 @@ figma.ui.onmessage = async function (msg) {
       }
     }
 
-    // Safety fallback: Skip full traversal if file is too large
     if (isHugeFile) {
       const pageNames = figma.root.children.map(function (p) { return p.name; });
       let collectionsSummary = [];
@@ -105,7 +104,6 @@ figma.ui.onmessage = async function (msg) {
       return;
     }
 
-    // Standard Scan for safe file sizes (Current Page scan to avoid memory overhead)
     const pageNodes = figma.currentPage.findAllWithCriteria({ types: ["COMPONENT", "COMPONENT_SET"] });
     const rootNodes = pageNodes.filter(function (node) { return node.parent.type !== "COMPONENT_SET"; });
 
@@ -132,7 +130,7 @@ figma.ui.onmessage = async function (msg) {
     });
   }
 
-  // --- TOOLING & CODE EXECUTION ENGINE ---
+  // EXECUTION ENGINE
   if (msg.type === "RUNUserCode") {
     try {
       const asyncExecutor = new Function("return (async () => { " + msg.code + " })()");
@@ -143,12 +141,12 @@ figma.ui.onmessage = async function (msg) {
           type: "EXECUTION_RESULT",
           data: typeof result === "object" ? JSON.stringify(result, null, 2) : String(result)
         });
-        figma.notify("⚡ Query executed! Results copied to clipboard.");
+        figma.notify("📋 [READ-ONLY] Output copied to clipboard.");
       } else {
-        figma.notify("✅ Execution complete.");
+        figma.notify("✅ [WRITE/MUTATION] Canvas updated cleanly.");
       }
     } catch (error) {
-      figma.notify("❌ Script Error: " + error.message, { timeout: 6000 });
+      figma.notify("❌ Script Execution Error: " + error.message, { timeout: 6000 });
     }
   }
 };
