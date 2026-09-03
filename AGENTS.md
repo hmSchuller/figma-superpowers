@@ -33,7 +33,7 @@ The system prompt also contains a **`STRICT CODE GENERATION & EXECUTION RULES` h
 
 - Change data and template together: a new `{{PLACEHOLDER}}` in `ui.html` needs a matching field in the `PRIMING_DATA_READY` payload in `code.js`, and vice versa. Keep header strings (`=== FIGMA … ===`) byte-stable — the AI and the paste regex depend on them.
 - Keep selection serialization lightweight Markdown (type, name, WxH, fill hex, 30-char text snippet, variant props, auto-layout). Do not regress to raw JSON dumps.
-- Keep the rules header's four guarantees intact (selection-context preference, Action Type + Expected Outcome flag, as-is execution, READ-ONLY return contract: `return` data, never `console.log`) unless the execution engine changes accordingly.
+- Keep the rules header's four guarantees intact (selection-context preference, Action Type + Expected Outcome flag, as-is execution, READ-ONLY clipboard contract: return the complete data for automatic clipboard copy, never `console.log`) unless the execution engine changes accordingly.
 - Docs: `README.md` is the user contract; `docs/superpowers/specs/` holds design history. Update both when behavior changes.
 
 ## Verification

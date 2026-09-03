@@ -8,7 +8,7 @@ A Figma plugin that bridges your design system with AI chat assistants. Scan the
 2. **Chat with AI** — Ask design-system questions, request critique, or plan changes. The AI answers from the scanned index first.
 3. **Copy Selection Context When Needed** — Select layers in Figma and click `Copy Selection Context` (or `Copy Canvas State` when nothing is selected). Paste the `=== FIGMA SELECTION CONTEXT ===` markdown into the chat for canvas-specific advice or executable changes.
 4. **Paste Code to Execute** — When the AI returns a ` ```javascript ` block, paste it into the plugin's **Tooling Clipboard Bridge** field. The plugin extracts the code and runs it against your Figma document.
-5. **Paste Tool Results Back** — If the script `return`s data (`[READ-ONLY]` query), the plugin auto-copies a `=== FIGMA TOOL RESPONSE ===` payload. Paste it back into the chat to continue the loop. If it mutates the canvas (`[WRITE/MUTATION]`), you just get a success notification.
+5. **Paste Tool Results Back** — A `[READ-ONLY]` script must return the complete requested data. The plugin copies that returned value to the clipboard as a `=== FIGMA TOOL RESPONSE ===` payload. Paste it back into the chat to continue the loop. If it mutates the canvas (`[WRITE/MUTATION]`), you just get a success notification.
 
 ## Scan Modes
 
@@ -21,7 +21,7 @@ A Figma plugin that bridges your design system with AI chat assistants. Scan the
 
 The UI shows the active mode in a status tag (`⚡ Standard Mode Active` / `🔍 Large File: Explorative Mode Active`).
 
-In Explorative mode the AI has no canvas nodes up front. The preferred discovery path is: select a frame → `Copy Selection Context`. Global searches (find components by name, list variables) go through lightweight `[READ-ONLY]` query scripts ending in `return`.
+In Explorative mode the AI has no canvas nodes up front. The preferred discovery path is: select a frame → `Copy Selection Context`. Global searches (find components by name, list variables) go through lightweight `[READ-ONLY]` query scripts that return the complete clipboard-ready result.
 
 ## AI Contract (Human-in-the-Loop Rules)
 
@@ -30,7 +30,7 @@ Every system prompt embeds a `STRICT CODE GENERATION & EXECUTION RULES` header t
 1. **Selection-context first** — For inspecting the element the user is looking at, ask for `Copy Selection Context` instead of generating a `figma.currentPage.selection` reader. Only generate `[READ-ONLY]` queries for global searches (unselected pages, find-by-name, variable details).
 2. **Action Type + Expected Outcome flag** — Immediately before any ` ```javascript ` block the AI must state `**Action Type**: [READ-ONLY] or [WRITE/MUTATION]` and `**Expected Outcome**: ...`.
 3. **Zero placeholders / "as is" execution** — Code must run immediately when pasted. No `YOUR_NODE_ID_HERE` / `<component-name>` placeholders. Missing IDs must be resolved via dynamic query (`findOne`, `selection[0]`) or by asking for selection context first.
-4. **READ-ONLY return contract** — Every `[READ-ONLY]` block must end with a `return` producing the data. `console.log` is forbidden: console output is invisible in Figma and never reaches the clipboard. Only a returned value is auto-copied as `=== FIGMA TOOL RESPONSE ===`. `[WRITE/MUTATION]` blocks must not return a value.
+4. **READ-ONLY clipboard contract** — Every `[READ-ONLY]` block must return the complete requested data in a clipboard-ready object, array, or string. The plugin automatically copies that returned value as `=== FIGMA TOOL RESPONSE ===`; a return such as `"done"` or a partial summary is not sufficient. `console.log` is forbidden: console output is invisible in Figma and never reaches the clipboard. `[WRITE/MUTATION]` blocks must not return a value.
 
 ## Tooling Clipboard Bridge
 
@@ -41,7 +41,7 @@ The paste zone (`smartPasteField`) accepts:
 
 Execution (`code.js` `RUNUserCode` handler) wraps the code in `(async () => { ... })()` via `new Function`:
 
-- Returns a value → treated as `[READ-ONLY]` query. Result is posted back as `EXECUTION_RESULT`, auto-copied as `=== FIGMA TOOL RESPONSE ===`, notification: `📋 [READ-ONLY] Output copied to clipboard.` Paste it back into the AI chat.
+- Returns a value → treated as `[READ-ONLY]` query. The complete result is posted back as `EXECUTION_RESULT` and auto-copied to the clipboard as `=== FIGMA TOOL RESPONSE ===`, notification: `📋 [READ-ONLY] Output copied to clipboard.` Paste it back into the AI chat.
 - Returns `undefined` → treated as `[WRITE/MUTATION]`. Notification: `✅ [WRITE/MUTATION] Canvas updated cleanly.`
 - Throws → notification: `❌ Script Execution Error: ...`
 

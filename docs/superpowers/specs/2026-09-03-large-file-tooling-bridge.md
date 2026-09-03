@@ -30,9 +30,9 @@ const SAFETY_LIMITS = { MAX_PAGES: 8, MAX_COMPONENTS: 150, MAX_VARIABLES: 300 };
 
 ### Prompt templates (`ui.html` — source of truth)
 
-- `SYSTEM_RULES_HEADER`: (1) selection-context preference, (2) Action Type + Expected Outcome flag before every ` ```javascript ` block, (3) zero placeholders / as-is execution.
+- `SYSTEM_RULES_HEADER`: (1) selection-context preference, (2) Action Type + Expected Outcome flag before every ` ```javascript ` block, (3) zero placeholders / as-is execution, (4) complete read results returned as the clipboard payload; no `console.*`.
 - `STANDARD_PROMPT_TEMPLATE`: `=== FIGMA SYSTEM INITIALIZATION (STANDARD MODE) ===` + `[COMPONENT INDEX] {{MANIFEST}}` + `[VARIABLE COLLECTIONS] {{VARIABLES}}` + rules header.
-- `EXPLORATIVE_PROMPT_TEMPLATE`: `=== FIGMA SYSTEM INITIALIZATION (EXPLORATIVE LAZY MODE) ===` + `[FILE MAP SKELETON]` (`{{PAGES}}`, `{{COLLECTIONS}}`) + rules header + rule 4 (no pre-loaded nodes; prefer `Copy Selection Context`; global searches via lightweight `[READ-ONLY]` scripts ending in `return`).
+- `EXPLORATIVE_PROMPT_TEMPLATE`: `=== FIGMA SYSTEM INITIALIZATION (EXPLORATIVE LAZY MODE) ===` + `[FILE MAP SKELETON]` (`{{PAGES}}`, `{{COLLECTIONS}}`) + rules header + rule 5 (no pre-loaded nodes; prefer `Copy Selection Context`; global searches via lightweight `[READ-ONLY]` scripts returning complete clipboard-ready results).
 - Old `SYSTEM_PROMPT_TEMPLATE` / `CONTEXT_CAPSULE_TEMPLATE` (with `{{TARGET_DATA}}`, `{{PAGE_NAME}}`, `{{TARGETING_STATE}}`, consultation/execution modes A/B) no longer exist at runtime.
 
 ### Selection context
@@ -45,7 +45,7 @@ const SAFETY_LIMITS = { MAX_PAGES: 8, MAX_COMPONENTS: 150, MAX_VARIABLES: 300 };
 
 - Paste zone extracts first `/```javascript([\s\S]*?)```/` match; fallback accepts raw text containing `figma` or starting with `return`.
 - `code.js` runs `new Function("return (async () => { " + code + " })()")`.
-- `result !== undefined` → `EXECUTION_RESULT` → UI auto-copies `=== FIGMA TOOL RESPONSE ===\n` + data, alert to paste back; notify `📋 [READ-ONLY] Output copied to clipboard.`
+- `result !== undefined` → `EXECUTION_RESULT` → UI auto-copies `=== FIGMA TOOL RESPONSE ===\n` + the complete returned data, alert to paste back; notify `📋 [READ-ONLY] Output copied to clipboard.`
 - `result === undefined` → notify `✅ [WRITE/MUTATION] Canvas updated cleanly.`
 - Throw → notify `❌ Script Execution Error: ...`.
 - UI panel is now 240×340 with labels `Environment Sync` / `Work with AI` / `Tooling Clipboard Bridge` and buttons `Evaluate & Scan File` → `Copy System Prompt`.
