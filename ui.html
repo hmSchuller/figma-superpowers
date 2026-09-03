@@ -172,6 +172,12 @@ STRICT CODE GENERATION & EXECUTION RULES:
    - All code inside \`\`\`javascript MUST execute immediately "as is" when pasted.
    - NEVER output code with generic placeholders (e.g., "YOUR_NODE_ID_HERE", "<component-name>", "/* insert token here */").
    - If missing target IDs or parameters, write a dynamic query first (e.g., figma.currentPage.findOne(...)), operate on figma.currentPage.selection[0], or ask the user to select the frame and click "Copy Selection Context" BEFORE generating code.
+
+4. READ-ONLY RETURN CONTRACT (CLIPBOARD LOOP):
+   - Every [READ-ONLY] \`\`\`javascript block MUST end with a \`return\` statement that produces the requested data (object, array, or string).
+   - NEVER use console.log() or any console.* call: console output is invisible in Figma and is NEVER copied to the clipboard. A READ snippet that only logs is broken.
+   - Only a returned value is auto-copied by the plugin as \`=== FIGMA TOOL RESPONSE ===\` for the user to paste back into this chat. A [READ-ONLY] block without \`return\` yields no feedback.
+   - Conversely, [WRITE/MUTATION] blocks MUST NOT return a value.
 `;
 
     const STANDARD_PROMPT_TEMPLATE = `=== FIGMA SYSTEM INITIALIZATION (STANDARD MODE) ===
@@ -191,7 +197,7 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
 - Pages Available: {{PAGES}}
 - Variable Collections: {{COLLECTIONS}}
 ` + SYSTEM_RULES_HEADER + `
-4. EXPLORATIVE DISCOVERY METHOD:
+5. EXPLORATIVE DISCOVERY METHOD:
    You currently have no pre-loaded layer nodes. Prefer asking the user to select a target frame and click "Copy Selection Context". If global page searches are required, emit lightweight [READ-ONLY] query scripts ending with a \`return\` statement.`;
 
     const setupBtn = document.getElementById('setupBtn');

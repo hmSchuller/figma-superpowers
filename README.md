@@ -30,6 +30,7 @@ Every system prompt embeds a `STRICT CODE GENERATION & EXECUTION RULES` header t
 1. **Selection-context first** — For inspecting the element the user is looking at, ask for `Copy Selection Context` instead of generating a `figma.currentPage.selection` reader. Only generate `[READ-ONLY]` queries for global searches (unselected pages, find-by-name, variable details).
 2. **Action Type + Expected Outcome flag** — Immediately before any ` ```javascript ` block the AI must state `**Action Type**: [READ-ONLY] or [WRITE/MUTATION]` and `**Expected Outcome**: ...`.
 3. **Zero placeholders / "as is" execution** — Code must run immediately when pasted. No `YOUR_NODE_ID_HERE` / `<component-name>` placeholders. Missing IDs must be resolved via dynamic query (`findOne`, `selection[0]`) or by asking for selection context first.
+4. **READ-ONLY return contract** — Every `[READ-ONLY]` block must end with a `return` producing the data. `console.log` is forbidden: console output is invisible in Figma and never reaches the clipboard. Only a returned value is auto-copied as `=== FIGMA TOOL RESPONSE ===`. `[WRITE/MUTATION]` blocks must not return a value.
 
 ## Tooling Clipboard Bridge
 
