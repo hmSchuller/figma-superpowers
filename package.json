@@ -5,7 +5,7 @@
   "description": "Offline SQLite design snapshots added to Figma Superpowers",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node tests/test-exporter.cjs && node tests/test-zip.cjs && node tests/test-prompt.cjs && python3 tests/test-schema.py"
+    "test": "node tests/test-exporter.cjs && node tests/test-zip.cjs && node tests/test-prompt.cjs && node tests/test-changes.cjs && node tests/test-snapshot.cjs && node tests/test-envelope.cjs && python3 tests/test-schema.py && python3 tests/test-reconcile.py"
   },
   "devDependencies": {
     "sql.js-fts5": "1.4.0"

@@ -31,6 +31,30 @@ network access is needed by designers. The Figma plugin reads data locally using
 Figma's built-in Plugin API. The database engine is pre-bundled into the plugin's
 iframe. The manifest explicitly disallows network access.
 
+## Keeping the snapshot current (in-session delta sync)
+
+After the first export you do not need to re-export to stay in sync. When the AI
+emits a `[WRITE/MUTATION]` script and you paste it into the Tooling Clipboard
+Bridge, the plugin executes it and then emits an authoritative
+**`=== FIGMA CHANGE REPORT ===`**, auto-copied to the clipboard. Paste it back into
+the chat and the AI applies the same change to its copy of `design.db`.
+
+The report is a changelog, not SQL: `created` carries whole rows (with their
+bindings and links), `updated` carries minimal patches of only the changed fields,
+and `deleted` carries subtree-root ids. Variable, mode and style edits ride the
+same structure under `tokens`. Every payload ends with a byte-stable
+`=== END … ===` footer and declares its totals, so the AI can tell a complete paste
+from a truncated one without the plugin guessing any chat's size limit.
+
+The **Copy Selection Context** button also carries a machine-applicable
+`=== FIGMA NODE SNAPSHOT ===` block beside its prose. A snapshot is an
+upsert-only resync of the region you selected, for when you edited the canvas by
+hand. Treat reports and snapshots as the sanctioned way to keep one snapshot fresh
+for the whole session; request a full re-export only when a report is `truncated`,
+when `geometry_stale` is set and exact geometry matters, or when the AI and the
+canvas disagree.
+
+
 ## For the plugin maintainer
 
 The checked-in files in `src/` are the **source** and are deliberately small.
@@ -58,12 +82,14 @@ stored uncompressed otherwise, so the archive is always valid and needs no
 third-party packaging dependency at runtime.
 
 > **Prototype verification status:** `npm test` (Node-based mocked Figma API
-> export + native SQLite schema/FTS5 search) and `npm run build` (placeholder
-> resolution, embedded SQLite injection, license copy) pass locally and produce
-> the distributable `code.js` + `ui.html`. What remains unverified here is the
-> live Figma runtime: executing the bundled `sql.js-fts5` inside the plugin
-> iframe, the download flow, and the clipboard round-trip. The maintainer should
-> verify the built plugin inside Figma before distributing it to designers.
+> export + change collector + snapshot + envelope + agent prompt + native;
+> SQLite schema/FTS5 search and report/snapshot reconciliation) and `npm run build`
+> (placeholder resolution, embedded SQLite injection, license copy) pass locally and
+> produce the distributable `code.js` + `ui.html`. What remains unverified here is
+> the live Figma runtime: executing the bundled `sql.js-fts5` inside the plugin
+> iframe, the live `documentchange` / `stylechange` feeds, the download flow, and the
+> clipboard round-trip. The maintainer should verify the built plugin inside Figma
+> before distributing it to designers.
 
 ## Database contents
 
@@ -121,9 +147,10 @@ WHERE v.name='color/action/primary';
   visual fidelity is essential.
 - SQLite is created in memory. Truly enormous Figma documents can exceed the
   plugin iframe memory budget. A later version could add page-selective
-  snapshotting, preview packs, incremental diffs, or a multi-part exporter. The
-  design for keeping one snapshot fresh within a session (instead of re-exporting)
-  is specified in `docs/superpowers/specs/2026-10-19-live-snapshot-delta-sync.md`.
+  snapshotting, preview packs, or a multi-part exporter. In-session freshness is
+  handled by the implemented change-report / node-snapshot delta sync
+  (`docs/superpowers/specs/2026-10-19-live-snapshot-delta-sync.md`), so the whole
+  file only needs re-exporting on drift, truncation, or exact-geometry requests.
 - Old original `RUNUserCode` executes pasted code with Figma privileges: only
   paste code you trust. The SQLite exporter itself is **read-only**.
 - An error aborts the export rather than providing a silently incomplete DB.
@@ -140,7 +167,8 @@ src/database.js     SQL schema, inserts, full-text index, prompt, downloads
 src/zip.js          minimal ZIP writer (Deflate via CompressionStream, stored fallback)
 build.mjs           assembles the actual distributable plugin files
 package.json        maintainer-only FTS-enabled SQLite dependency
-tests/              mock Figma export, ZIP writer, agent prompt, native SQLite schema checks
+tests/              mock Figma export/change collector, ZIP writer, agent prompt,
+                    snapshot + envelope checks, native SQLite schema and reconciliation
 ```
 
 ## Licensing

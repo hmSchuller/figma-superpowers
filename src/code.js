@@ -54,59 +54,86 @@ pushCurrentSelection();
 figma.ui.onmessage = async function (msg) {
   if (packHandleMessage(msg)) return;
   if (msg.type === 'GENERATE_DYNAMIC_PRIMING_PROMPT') {
-    const pageCount = figma.root.children.length;
-    let isHugeFile = pageCount > SAFETY_LIMITS.MAX_PAGES;
-    let localVariables = [];
-    if (!isHugeFile && figma.variables) {
-      localVariables = await figma.variables.getLocalVariablesAsync();
-      if (localVariables.length > SAFETY_LIMITS.MAX_VARIABLES) isHugeFile = true;
-    }
-    if (isHugeFile) {
-      const pageNames = figma.root.children.map(function (p) { return p.name; });
-      let collectionsSummary = [];
+    packBeginSuppression();
+    try {
+      const pageCount = figma.root.children.length;
+      let isHugeFile = pageCount > SAFETY_LIMITS.MAX_PAGES;
+      let localVariables = [];
+      if (!isHugeFile && figma.variables) {
+        localVariables = await figma.variables.getLocalVariablesAsync();
+        if (localVariables.length > SAFETY_LIMITS.MAX_VARIABLES) isHugeFile = true;
+      }
+      if (isHugeFile) {
+        const pageNames = figma.root.children.map(function (p) { return p.name; });
+        let collectionsSummary = [];
+        if (figma.variables) {
+          const collections = await figma.variables.getLocalVariableCollectionsAsync();
+          collectionsSummary = collections.map(function (c) { return c.name + ' (' + c.modes.length + ' modes)'; });
+        }
+        figma.ui.postMessage({ type: 'PRIMING_DATA_READY', mode: 'EXPLORATIVE',
+          pageNames: pageNames, collectionsSummary: collectionsSummary });
+        return;
+      }
+      await figma.currentPage.loadAsync();
+      const pageNodes = figma.currentPage.findAllWithCriteria({ types: ['COMPONENT', 'COMPONENT_SET'] });
+      const rootNodes = pageNodes.filter(function (node) { return node.parent.type !== 'COMPONENT_SET'; });
+      let manifestMd = '';
+      for (let i = 0; i < rootNodes.length; i++) {
+        const node = rootNodes[i];
+        const props = node.type === 'COMPONENT_SET'
+          ? Object.keys(node.componentPropertyDefinitions).join(', ') : 'None';
+        manifestMd += '- **' + node.name + '** (' + node.type + ') | Key: `' +
+          node.key + '` | Props: [' + props + ']\n';
+      }
+      let variablesMd = '';
       if (figma.variables) {
         const collections = await figma.variables.getLocalVariableCollectionsAsync();
-        collectionsSummary = collections.map(function (c) { return c.name + ' (' + c.modes.length + ' modes)'; });
+        for (let i = 0; i < collections.length; i++) {
+          variablesMd += '- Collection: **' + collections[i].name + '** (' +
+            collections[i].modes.length + ' modes)\n';
+        }
       }
-      figma.ui.postMessage({ type: 'PRIMING_DATA_READY', mode: 'EXPLORATIVE',
-        pageNames: pageNames, collectionsSummary: collectionsSummary });
-      return;
+      figma.ui.postMessage({ type: 'PRIMING_DATA_READY', mode: 'STANDARD',
+        manifestMd: manifestMd, variablesMd: variablesMd });
+      // Prime the token baseline so the first write run can diff against it.
+      try { await packPrimeTokenBaseline(); } catch (error) { /* baseline is optional */ }
+    } finally {
+      packEndSuppression();
     }
-    await figma.currentPage.loadAsync();
-    const pageNodes = figma.currentPage.findAllWithCriteria({ types: ['COMPONENT', 'COMPONENT_SET'] });
-    const rootNodes = pageNodes.filter(function (node) { return node.parent.type !== 'COMPONENT_SET'; });
-    let manifestMd = '';
-    for (let i = 0; i < rootNodes.length; i++) {
-      const node = rootNodes[i];
-      const props = node.type === 'COMPONENT_SET'
-        ? Object.keys(node.componentPropertyDefinitions).join(', ') : 'None';
-      manifestMd += '- **' + node.name + '** (' + node.type + ') | Key: `' +
-        node.key + '` | Props: [' + props + ']\n';
-    }
-    let variablesMd = '';
-    if (figma.variables) {
-      const collections = await figma.variables.getLocalVariableCollectionsAsync();
-      for (let i = 0; i < collections.length; i++) {
-        variablesMd += '- Collection: **' + collections[i].name + '** (' +
-          collections[i].modes.length + ' modes)\n';
-      }
-    }
-    figma.ui.postMessage({ type: 'PRIMING_DATA_READY', mode: 'STANDARD',
-      manifestMd: manifestMd, variablesMd: variablesMd });
   }
   if (msg.type === 'RUNUserCode') {
+    packStartChangeCollection();
+    let result;
+    let failure = null;
     try {
       const asyncExecutor = new Function('return (async () => { ' + msg.code + ' })()');
-      const result = await asyncExecutor();
-      if (result !== undefined) {
-        figma.ui.postMessage({ type: 'EXECUTION_RESULT',
-          data: typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result) });
-        figma.notify('📋 [READ-ONLY] Output copied to clipboard.');
-      } else {
-        figma.notify('✅ [WRITE/MUTATION] Canvas updated cleanly.');
-      }
+      result = await asyncExecutor();
     } catch (error) {
-      figma.notify('❌ Script Execution Error: ' + error.message, { timeout: 6000 });
+      failure = error;
+    }
+    const collected = packStopChangeCollection();
+    const isWrite = failure !== null || result === undefined;
+    const hasNodeChanges = !!(collected && (collected.createdIds.length ||
+      collected.updatedIds.length || collected.deletedIds.length ||
+      collected.styleCreated.length || collected.styleUpdated.length ||
+      collected.styleDeleted.length));
+    if (collected && (isWrite || hasNodeChanges)) {
+      try {
+        const report = await packBuildChangeReport(collected, { tokens: isWrite });
+        figma.ui.postMessage({ type: 'EXECUTION_RESULT', kind: 'CHANGE_REPORT',
+          data: JSON.stringify(report, null, 2) });
+      } catch (reportError) {
+        // A report failure must never mask the script's own result or error.
+      }
+    }
+    if (failure) {
+      figma.notify('❌ Script Execution Error: ' + failure.message, { timeout: 6000 });
+    } else if (result !== undefined) {
+      figma.ui.postMessage({ type: 'EXECUTION_RESULT',
+        data: typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result) });
+      figma.notify('📋 [READ-ONLY] Output copied to clipboard.');
+    } else {
+      figma.notify('📋 Change report copied — paste it back so the snapshot stays current.');
     }
   }
 };

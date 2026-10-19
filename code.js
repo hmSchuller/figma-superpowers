@@ -1,6 +1,14 @@
 /* FigmaPack: runs inside Figma's plugin sandbox, not Node.js. */
 const PACK_BATCH_SIZE = 200;
+const PACK_REPORT_LIMIT = 2000;
 let activeExport = null;
+
+/* Change-report collector state. Listeners are bound lazily and only record while a
+   script run is active (packChangeCollector is non-null) and suppression is off. */
+let packChangeCollector = null;
+let packSuppressChanges = 0;
+let packTokenBaseline = null;
+let packListenersBound = false;
 
 function packSafe(object, property, fallback) {
   try {
@@ -52,27 +60,29 @@ function packBindingRows(bindings, figmaId, prefix, output) {
   });
 }
 
+/* Design/layout/paint/effect detail compacted into the single properties_json column. */
+const PACK_RICH_FIELDS = [
+  'layoutMode', 'primaryAxisAlignItems', 'counterAxisAlignItems', 'primaryAxisSizingMode',
+  'counterAxisSizingMode', 'layoutAlign', 'layoutGrow', 'layoutSizingHorizontal',
+  'layoutSizingVertical', 'layoutWrap', 'itemSpacing', 'counterAxisSpacing',
+  'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'minWidth', 'maxWidth',
+  'minHeight', 'maxHeight', 'cornerRadius', 'topLeftRadius', 'topRightRadius',
+  'bottomLeftRadius', 'bottomRightRadius', 'opacity', 'blendMode', 'clipsContent',
+  'rotation', 'fills', 'strokes', 'strokeWeight', 'strokeAlign', 'effects',
+  'fontName', 'fontSize', 'fontWeight', 'textAlignHorizontal', 'textAlignVertical',
+  'lineHeight', 'letterSpacing', 'textAutoResize', 'textCase', 'textDecoration',
+  'paragraphSpacing', 'paragraphIndent', 'componentProperties',
+  'componentPropertyDefinitions', 'variantProperties', 'boundVariables',
+  'explicitVariableModes', 'reactions', 'flowStartingPoints',
+  'layoutGrids', 'gridRowCount', 'gridColumnCount', 'gridCell', 'exportSettings',
+  'fillStyleId', 'strokeStyleId', 'effectStyleId', 'gridStyleId', 'textStyleId',
+  'description', 'documentationLinks', 'isAsset', 'devStatus', 'locked',
+  'relativeTransform', 'constraints', 'overflowDirection'
+];
+
 function packNode(node, parentId, pageId, order, depth) {
   const extra = {};
-  const richFields = [
-    'layoutMode', 'primaryAxisAlignItems', 'counterAxisAlignItems', 'primaryAxisSizingMode',
-    'counterAxisSizingMode', 'layoutAlign', 'layoutGrow', 'layoutSizingHorizontal',
-    'layoutSizingVertical', 'layoutWrap', 'itemSpacing', 'counterAxisSpacing',
-    'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'minWidth', 'maxWidth',
-    'minHeight', 'maxHeight', 'cornerRadius', 'topLeftRadius', 'topRightRadius',
-    'bottomLeftRadius', 'bottomRightRadius', 'opacity', 'blendMode', 'clipsContent',
-    'rotation', 'fills', 'strokes', 'strokeWeight', 'strokeAlign', 'effects',
-    'fontName', 'fontSize', 'fontWeight', 'textAlignHorizontal', 'textAlignVertical',
-    'lineHeight', 'letterSpacing', 'textAutoResize', 'textCase', 'textDecoration',
-    'paragraphSpacing', 'paragraphIndent', 'componentProperties',
-    'componentPropertyDefinitions', 'variantProperties', 'boundVariables',
-    'explicitVariableModes', 'reactions', 'flowStartingPoints',
-    'layoutGrids', 'gridRowCount', 'gridColumnCount', 'gridCell', 'exportSettings',
-    'fillStyleId', 'strokeStyleId', 'effectStyleId', 'gridStyleId', 'textStyleId',
-    'description', 'documentationLinks', 'isAsset', 'devStatus', 'locked',
-    'relativeTransform', 'constraints', 'overflowDirection'
-  ];
-  richFields.forEach(function (field) {
+  PACK_RICH_FIELDS.forEach(function (field) {
     const value = packProperty(node, field);
     if (value !== undefined && value !== null) extra[field] = value;
   });
@@ -125,6 +135,88 @@ function packNode(node, parentId, pageId, order, depth) {
   return { node: record, bindings: bindingRows, links: links };
 }
 
+/* Iterative subtree walk. Returns [{ node, bindings, links }] in the exporter's layer
+   order; `parentId`/`position`/`depth` describe where `root` sits. Shared by the full
+   export, a change report's `created` roots and a node snapshot, so all three emit the
+   same bytes. */
+async function packNodeRecords(root, pageId, parentId, position, depth) {
+  const records = [];
+  const stack = [{ node: root, parent: parentId, index: position, depth: depth }];
+  while (stack.length) {
+    const entry = stack.pop();
+    const record = packNode(entry.node, entry.parent, pageId, entry.index, entry.depth);
+    if (entry.node.type === 'INSTANCE' && typeof entry.node.getMainComponentAsync === 'function') {
+      const main = await entry.node.getMainComponentAsync();
+      if (main) {
+        record.links.push({ source_id: entry.node.id, target_id: main.id,
+          kind: 'instance', label: main.name || '' });
+      }
+    }
+    records.push(record);
+    if ('children' in entry.node) {
+      const children = entry.node.children;
+      for (let i = children.length - 1; i >= 0; i--) {
+        stack.push({ node: children[i], parent: entry.node.id, index: i, depth: entry.depth + 1 });
+      }
+    }
+  }
+  return records;
+}
+
+function packCollectionRecords(collection) {
+  const records = [{ kind: 'collection', data: {
+    figma_id: collection.id, name: collection.name, key: collection.key || null,
+    default_mode_id: collection.defaultModeId || null,
+    remote: collection.remote ? 1 : 0,
+    properties_json: packJSON({ hiddenFromPublishing: collection.hiddenFromPublishing,
+      variableIds: collection.variableIds })
+  }}];
+  (collection.modes || []).forEach(function (mode, index) {
+    records.push({ kind: 'mode', data: { collection_id: collection.id, mode_id: mode.modeId,
+      name: mode.name, position: index } });
+  });
+  return records;
+}
+
+function packVariableRecords(variable) {
+  const records = [{ kind: 'variable', data: {
+    figma_id: variable.id, collection_id: variable.variableCollectionId,
+    name: variable.name, key: variable.key || null,
+    resolved_type: variable.resolvedType, description: variable.description || '',
+    properties_json: packJSON({ scopes: variable.scopes,
+      codeSyntax: variable.codeSyntax, hiddenFromPublishing: variable.hiddenFromPublishing,
+      remote: variable.remote })
+  }}];
+  Object.keys(variable.valuesByMode || {}).forEach(function (modeId) {
+    const value = variable.valuesByMode[modeId];
+    records.push({ kind: 'value', data: {
+      variable_id: variable.id, mode_id: modeId,
+      value_json: packJSON(value),
+      alias_variable_id: value && value.type === 'VARIABLE_ALIAS' ? value.id : null
+    }});
+  });
+  return records;
+}
+
+function packStyleType(style) {
+  return (style && (style.styleType || style.type)) || null;
+}
+
+function packStyleRecords(style, styleType) {
+  const properties = {};
+  ['paints', 'fontName', 'fontSize', 'lineHeight', 'letterSpacing',
+    'paragraphSpacing', 'textCase', 'textDecoration', 'effects', 'layoutGrids']
+    .forEach(function (field) {
+      const value = packProperty(style, field);
+      if (value !== undefined) properties[field] = value;
+    });
+  return [{ kind: 'style', data: {
+    figma_id: style.id, key: style.key || null, name: style.name,
+    style_type: styleType || packStyleType(style), description: style.description || '',
+    properties_json: JSON.stringify(properties)
+  }}];
+}
+
 async function packPostBatch(state, records) {
   if (!records.length || state.cancelled) return;
   const sequence = ++state.sequence;
@@ -145,6 +237,7 @@ async function packExport() {
   activeExport = state;
   let batch = [];
   const oldSkipInvisibleChildren = figma.skipInvisibleInstanceChildren;
+  packBeginSuppression();
   try {
     figma.skipInvisibleInstanceChildren = false;
     const pages = figma.root.children.slice();
@@ -168,32 +261,19 @@ async function packExport() {
         properties_json: packJSON({ explicitVariableModes: packSafe(page, 'explicitVariableModes', {}) })
       }});
       // Iterative traversal avoids call-stack overflows and preserves layer ordering.
-      const stack = [];
-      for (let i = page.children.length - 1; i >= 0; i--) {
-        stack.push({ node: page.children[i], parent: page.id, index: i, depth: 0 });
-      }
-      while (stack.length) {
-        if (state.cancelled) throw new Error('Export cancelled');
-        const entry = stack.pop();
-        const record = packNode(entry.node, entry.parent, page.id, entry.index, entry.depth);
-        batch.push({ kind: 'node', data: record.node });
-        record.bindings.forEach(function (binding) { batch.push({ kind: 'binding', data: binding }); });
-        record.links.forEach(function (link) { batch.push({ kind: 'link', data: link }); });
-        if (entry.node.type === 'INSTANCE' && typeof entry.node.getMainComponentAsync === 'function') {
-          const main = await entry.node.getMainComponentAsync();
-          if (main) batch.push({ kind: 'link', data: { source_id: entry.node.id,
-            target_id: main.id, kind: 'instance', label: main.name || '' } });
-        }
-        state.nodeCount++;
-        if ('children' in entry.node) {
-          const children = entry.node.children;
-          for (let i = children.length - 1; i >= 0; i--) {
-            stack.push({ node: children[i], parent: entry.node.id, index: i, depth: entry.depth + 1 });
+      for (let ci = 0; ci < page.children.length; ci++) {
+        const records = await packNodeRecords(page.children[ci], page.id, page.id, ci, 0);
+        for (let ri = 0; ri < records.length; ri++) {
+          if (state.cancelled) throw new Error('Export cancelled');
+          const record = records[ri];
+          batch.push({ kind: 'node', data: record.node });
+          record.bindings.forEach(function (binding) { batch.push({ kind: 'binding', data: binding }); });
+          record.links.forEach(function (link) { batch.push({ kind: 'link', data: link }); });
+          state.nodeCount++;
+          if (batch.length >= PACK_BATCH_SIZE) {
+            await packPostBatch(state, batch);
+            batch = [];
           }
-        }
-        if (batch.length >= PACK_BATCH_SIZE) {
-          await packPostBatch(state, batch);
-          batch = [];
         }
       }
       state.pageCount++;
@@ -202,43 +282,26 @@ async function packExport() {
     }
     if (figma.variables) {
       const collections = await figma.variables.getLocalVariableCollectionsAsync();
+      const tokenRecords = [];
       collections.forEach(function (collection) {
-        batch.push({ kind: 'collection', data: {
-          figma_id: collection.id, name: collection.name, key: collection.key || null,
-          default_mode_id: collection.defaultModeId || null,
-          remote: collection.remote ? 1 : 0,
-          properties_json: packJSON({ hiddenFromPublishing: collection.hiddenFromPublishing,
-            variableIds: collection.variableIds })
-        }});
-        (collection.modes || []).forEach(function (mode, index) {
-          batch.push({ kind: 'mode', data: { collection_id: collection.id, mode_id: mode.modeId,
-            name: mode.name, position: index } });
+        packCollectionRecords(collection).forEach(function (record) {
+          batch.push(record);
+          tokenRecords.push(record);
         });
       });
       const vars = await figma.variables.getLocalVariablesAsync();
       for (let vi = 0; vi < vars.length; vi++) {
-        const variable = vars[vi];
-        batch.push({ kind: 'variable', data: {
-          figma_id: variable.id, collection_id: variable.variableCollectionId,
-          name: variable.name, key: variable.key || null,
-          resolved_type: variable.resolvedType, description: variable.description || '',
-          properties_json: packJSON({ scopes: variable.scopes,
-            codeSyntax: variable.codeSyntax, hiddenFromPublishing: variable.hiddenFromPublishing,
-            remote: variable.remote })
-        }});
-        Object.keys(variable.valuesByMode || {}).forEach(function (modeId) {
-          const value = variable.valuesByMode[modeId];
-          batch.push({ kind: 'value', data: {
-            variable_id: variable.id, mode_id: modeId,
-            value_json: packJSON(value),
-            alias_variable_id: value && value.type === 'VARIABLE_ALIAS' ? value.id : null
-          }});
+        packVariableRecords(vars[vi]).forEach(function (record) {
+          batch.push(record);
+          tokenRecords.push(record);
         });
         if (batch.length >= PACK_BATCH_SIZE) {
           await packPostBatch(state, batch);
           batch = [];
         }
       }
+      // Prime the cached baseline from the records we already enumerated.
+      packTokenBaseline = packTokenBaselineFromRecords(tokenRecords);
     }
     const styleGetters = [
       ['PAINT', 'getLocalPaintStylesAsync'], ['TEXT', 'getLocalTextStylesAsync'],
@@ -249,18 +312,7 @@ async function packExport() {
       if (typeof figma[pair[1]] !== 'function') continue;
       const styles = await figma[pair[1]]();
       styles.forEach(function (style) {
-        const properties = {};
-        ['paints', 'fontName', 'fontSize', 'lineHeight', 'letterSpacing',
-          'paragraphSpacing', 'textCase', 'textDecoration', 'effects', 'layoutGrids']
-          .forEach(function (field) {
-            const value = packProperty(style, field);
-            if (value !== undefined) properties[field] = value;
-          });
-        batch.push({ kind: 'style', data: {
-          figma_id: style.id, key: style.key || null, name: style.name,
-          style_type: pair[0], description: style.description || '',
-          properties_json: JSON.stringify(properties)
-        }});
+        packStyleRecords(style, pair[0]).forEach(function (record) { batch.push(record); });
       });
       if (batch.length >= PACK_BATCH_SIZE) { await packPostBatch(state, batch); batch = []; }
     }
@@ -271,12 +323,447 @@ async function packExport() {
   } finally {
     figma.skipInvisibleInstanceChildren = oldSkipInvisibleChildren;
     activeExport = null;
+    packEndSuppression();
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Change collection
+ *
+ * Layers ride `documentchange`, styles ride `stylechange`. Variables
+ * have no event, so they are diffed against a cached signature baseline
+ * (primed once, re-cached after each write run).
+ * ------------------------------------------------------------------ */
+
+function packBeginSuppression() { packSuppressChanges++; }
+
+function packEndSuppression() { if (packSuppressChanges > 0) packSuppressChanges--; }
+
+function packBindChangeListeners() {
+  if (packListenersBound) return;
+  packListenersBound = true;
+  if (typeof figma.on !== 'function') return;
+  try { figma.on('documentchange', packOnDocumentChange); } catch (error) { /* unsupported */ }
+  try { figma.on('stylechange', packOnStyleChange); } catch (error) { /* unsupported */ }
+}
+
+function packStartChangeCollection() {
+  packBindChangeListeners();
+  packChangeCollector = {
+    createdIds: [], createdSet: new Set(),
+    updatedIds: [], updatedSet: new Set(), updatedProps: {},
+    deletedIds: [], deletedSet: new Set(),
+    styleCreated: [], styleCreatedSet: new Set(),
+    styleUpdated: [], styleUpdatedSet: new Set(),
+    styleDeleted: [], styleDeletedSet: new Set()
+  };
+}
+
+function packStopChangeCollection() {
+  const collected = packChangeCollector;
+  packChangeCollector = null;
+  return collected;
+}
+
+function packOnDocumentChange(event) {
+  if (packSuppressChanges > 0 || !packChangeCollector) return;
+  const changes = (event && event.documentChanges) || [];
+  for (let i = 0; i < changes.length; i++) {
+    const change = changes[i];
+    if (!change || !change.id) continue;
+    if (change.type === 'CREATE') {
+      if (!packChangeCollector.createdSet.has(change.id)) {
+        packChangeCollector.createdSet.add(change.id);
+        packChangeCollector.createdIds.push(change.id);
+      }
+    } else if (change.type === 'DELETE') {
+      if (!packChangeCollector.deletedSet.has(change.id)) {
+        packChangeCollector.deletedSet.add(change.id);
+        packChangeCollector.deletedIds.push(change.id);
+      }
+    } else if (change.type === 'PROPERTY_CHANGE') {
+      if (packChangeCollector.deletedSet.has(change.id)) continue;
+      if (!packChangeCollector.updatedSet.has(change.id)) {
+        packChangeCollector.updatedSet.add(change.id);
+        packChangeCollector.updatedIds.push(change.id);
+      }
+      const state = packChangeCollector.updatedProps[change.id] ||
+        { props: {}, whole: false };
+      const properties = change.properties;
+      if (!properties || !properties.length) {
+        // No property list: we cannot map fields, so send the whole row.
+        state.whole = true;
+      } else {
+        properties.forEach(function (property) { state.props[property] = true; });
+      }
+      packChangeCollector.updatedProps[change.id] = state;
+    }
+  }
+}
+
+function packStyleEventRecord(change) {
+  const style = change && change.style;
+  if (!style) return null;
+  const records = packStyleRecords(style, packStyleType(style));
+  return records.length ? records[0] : null;
+}
+
+function packOnStyleChange(event) {
+  if (packSuppressChanges > 0 || !packChangeCollector) return;
+  const changes = (event && event.styleChanges) || [];
+  for (let i = 0; i < changes.length; i++) {
+    const change = changes[i];
+    if (!change || !change.id) continue;
+    if (change.type === 'STYLE_DELETE') {
+      if (!packChangeCollector.styleDeletedSet.has(change.id)) {
+        packChangeCollector.styleDeletedSet.add(change.id);
+        packChangeCollector.styleDeleted.push({ kind: 'style', figma_id: change.id });
+      }
+    } else if (change.type === 'STYLE_CREATE') {
+      const record = packStyleEventRecord(change);
+      if (record && !packChangeCollector.styleCreatedSet.has(change.id)) {
+        packChangeCollector.styleCreatedSet.add(change.id);
+        packChangeCollector.styleCreated.push(record);
+      }
+    } else if (change.type === 'STYLE_PROPERTY_CHANGE') {
+      const record = packStyleEventRecord(change);
+      if (record && !packChangeCollector.styleUpdatedSet.has(change.id)) {
+        packChangeCollector.styleUpdatedSet.add(change.id);
+        const set = {};
+        Object.keys(record.data).forEach(function (field) {
+          if (field !== 'figma_id') set[field] = record.data[field];
+        });
+        packChangeCollector.styleUpdated.push({ kind: 'style', key: { figma_id: change.id }, set: set });
+      }
+    }
+  }
+}
+
+/* ---- token baseline / diff (variables, modes, collections, values) ---- */
+
+async function packTokenSnapshot() {
+  const records = [];
+  if (figma.variables) {
+    const collections = await figma.variables.getLocalVariableCollectionsAsync();
+    for (let i = 0; i < collections.length; i++) {
+      const collectionRecords = packCollectionRecords(collections[i]);
+      for (let r = 0; r < collectionRecords.length; r++) records.push(collectionRecords[r]);
+    }
+    const variables = await figma.variables.getLocalVariablesAsync();
+    for (let i = 0; i < variables.length; i++) {
+      const variableRecords = packVariableRecords(variables[i]);
+      for (let r = 0; r < variableRecords.length; r++) records.push(variableRecords[r]);
+    }
+  }
+  return records;
+}
+
+function packTokenSignature(kind, data) {
+  if (kind === 'collection' || kind === 'variable') return kind + ':' + data.figma_id;
+  if (kind === 'mode') return 'mode:' + data.collection_id + '/' + data.mode_id;
+  if (kind === 'value') return 'value:' + data.variable_id + '/' + data.mode_id;
+  return kind + ':' + JSON.stringify(data);
+}
+
+function packTokenKey(kind, data) {
+  if (kind === 'collection' || kind === 'variable') return { figma_id: data.figma_id };
+  if (kind === 'mode') return { collection_id: data.collection_id, mode_id: data.mode_id };
+  if (kind === 'value') return { variable_id: data.variable_id, mode_id: data.mode_id };
+  return { figma_id: data.figma_id };
+}
+
+function packTokenDelete(kind, data) {
+  if (kind === 'mode' || kind === 'value') return { kind: kind, key: packTokenKey(kind, data) };
+  return { kind: kind, figma_id: data.figma_id };
+}
+
+function packTokenBaselineFromRecords(records) {
+  const baseline = {};
+  for (let i = 0; i < records.length; i++) {
+    baseline[packTokenSignature(records[i].kind, records[i].data)] =
+      { kind: records[i].kind, data: records[i].data };
+  }
+  return baseline;
+}
+
+async function packPrimeTokenBaseline() {
+  const records = await packTokenSnapshot();
+  packTokenBaseline = packTokenBaselineFromRecords(records);
+  return packTokenBaseline;
+}
+
+function packDiffTokenRecords(before, afterRecords) {
+  const created = [];
+  const updated = [];
+  const deleted = [];
+  const seen = {};
+  for (let i = 0; i < afterRecords.length; i++) {
+    const record = afterRecords[i];
+    const signature = packTokenSignature(record.kind, record.data);
+    seen[signature] = true;
+    const old = before[signature];
+    if (!old) { created.push({ kind: record.kind, data: record.data }); continue; }
+    const set = {};
+    let changed = false;
+    Object.keys(record.data).forEach(function (field) {
+      if (JSON.stringify(old.data[field]) !== JSON.stringify(record.data[field])) {
+        set[field] = record.data[field];
+        changed = true;
+      }
+    });
+    if (changed) {
+      updated.push({ kind: record.kind, key: packTokenKey(record.kind, record.data), set: set });
+    }
+  }
+  Object.keys(before).forEach(function (signature) {
+    if (!seen[signature]) deleted.push(packTokenDelete(before[signature].kind, before[signature].data));
+  });
+  return { created: created, updated: updated, deleted: deleted };
+}
+
+/* ---- node lookups and property mapping ---- */
+
+async function packResolveNode(id) {
+  if (typeof figma.getNodeByIdAsync === 'function') {
+    try { return await figma.getNodeByIdAsync(id); } catch (error) { return null; }
+  }
+  if (typeof figma.getNodeById === 'function') {
+    try { return figma.getNodeById(id); } catch (error) { return null; }
+  }
+  return null;
+}
+
+function packNodePage(node) {
+  let current = node;
+  let guard = 0;
+  while (current && current.type !== 'PAGE' && guard < 1000) { current = current.parent; guard++; }
+  return current && current.type === 'PAGE' ? current : null;
+}
+
+function packNodePlacement(node) {
+  const parent = node.parent || null;
+  let position = 0;
+  if (parent && parent.children) {
+    const index = parent.children.indexOf(node);
+    if (index !== -1) position = index;
+  }
+  let depth = 0;
+  let current = parent;
+  let guard = 0;
+  while (current && current.type !== 'PAGE' && guard < 1000) { depth++; current = current.parent; guard++; }
+  return { parent_id: parent ? parent.id : null, position: position, depth: depth };
+}
+
+const PACK_SCALAR_PROPERTY_FIELDS = {
+  name: 'name', visible: 'visible', x: 'x', y: 'y', width: 'width', height: 'height',
+  characters: 'text'
+};
+
+const PACK_STRUCTURE_PROPERTIES = {
+  parent: true, position: true, index: true, reparent: true, reorder: true, move: true
+};
+
+const PACK_RICH_PROPERTY_SET = (function () {
+  const set = {};
+  PACK_RICH_FIELDS.forEach(function (field) { set[field] = true; });
+  set.boundVariables = true;
+  set.reactions = true;
+  return set;
+})();
+
+const PACK_BINDING_PROPERTIES = { boundVariables: true, fills: true, strokes: true, effects: true, layoutGrids: true };
+const PACK_LINK_PROPERTIES = { reactions: true };
+
+async function packNodeUpdateEntry(node, state) {
+  const placement = packNodePlacement(node);
+  const page = packNodePage(node);
+  const full = packNode(node, placement.parent_id, page ? page.id : placement.parent_id,
+    placement.position, placement.depth);
+  const set = {};
+  let whole = state.whole === true;
+  const props = state.props || {};
+  const propNames = Object.keys(props);
+  if (!whole) {
+    for (let i = 0; i < propNames.length; i++) {
+      const prop = propNames[i];
+      if (!PACK_SCALAR_PROPERTY_FIELDS[prop] && !PACK_STRUCTURE_PROPERTIES[prop] &&
+        !PACK_RICH_PROPERTY_SET[prop]) { whole = true; break; }
+    }
+  }
+  let needProperties = false;
+  let needBindings = false;
+  let needLinks = false;
+  let needStructure = false;
+  if (whole) {
+    Object.keys(full.node).forEach(function (field) {
+      if (field !== 'figma_id') set[field] = full.node[field];
+    });
+    needProperties = true;
+    needBindings = true;
+    needLinks = true;
+  } else {
+    propNames.forEach(function (prop) {
+      if (PACK_SCALAR_PROPERTY_FIELDS[prop]) {
+        set[PACK_SCALAR_PROPERTY_FIELDS[prop]] = full.node[PACK_SCALAR_PROPERTY_FIELDS[prop]];
+      } else if (PACK_STRUCTURE_PROPERTIES[prop]) {
+        needStructure = true;
+      } else if (PACK_RICH_PROPERTY_SET[prop]) {
+        needProperties = true;
+        if (PACK_BINDING_PROPERTIES[prop]) needBindings = true;
+        if (PACK_LINK_PROPERTIES[prop]) needLinks = true;
+      }
+    });
+    if (needProperties) set.properties_json = full.node.properties_json;
+    if (needStructure) {
+      set.parent_id = full.node.parent_id;
+      set.position = full.node.position;
+      set.depth = full.node.depth;
+    }
+  }
+  const entry = { figma_id: node.id, set: set };
+  if (needBindings) entry.bindings = full.bindings;
+  if (needLinks) entry.links = full.links;
+  return entry;
+}
+
+async function packBuildCreatedRecords(collected) {
+  const emitted = {};
+  const created = [];
+  for (let i = 0; i < collected.createdIds.length; i++) {
+    const id = collected.createdIds[i];
+    if (emitted[id]) continue;
+    const node = await packResolveNode(id);
+    if (!node) { emitted[id] = true; continue; }
+    const page = packNodePage(node);
+    const placement = packNodePlacement(node);
+    const records = await packNodeRecords(node, page ? page.id : placement.parent_id,
+      placement.parent_id, placement.position, placement.depth);
+    for (let r = 0; r < records.length; r++) {
+      const recordId = records[r].node.figma_id;
+      if (emitted[recordId]) continue;
+      emitted[recordId] = true;
+      created.push(records[r]);
+    }
+  }
+  return created;
+}
+
+async function packBuildUpdatedRecords(collected) {
+  const updated = [];
+  for (let i = 0; i < collected.updatedIds.length; i++) {
+    const id = collected.updatedIds[i];
+    if (collected.deletedSet.has(id) || collected.createdSet.has(id)) continue;
+    const node = await packResolveNode(id);
+    if (!node) continue;
+    const state = collected.updatedProps[id] || { props: {}, whole: true };
+    updated.push(await packNodeUpdateEntry(node, state));
+  }
+  return updated;
+}
+
+function packBuildDeletedIds(collected) {
+  const deleted = [];
+  for (let i = 0; i < collected.deletedIds.length; i++) {
+    const id = collected.deletedIds[i];
+    if (collected.createdSet.has(id)) continue;
+    deleted.push(id);
+  }
+  return deleted;
+}
+
+async function packBuildChangeReport(collected, options) {
+  options = options || {};
+  const created = await packBuildCreatedRecords(collected);
+  const updated = await packBuildUpdatedRecords(collected);
+  const deleted = packBuildDeletedIds(collected);
+  let tokenCreated = collected.styleCreated.slice();
+  let tokenUpdated = collected.styleUpdated.slice();
+  let tokenDeleted = collected.styleDeleted.slice();
+  if (options.tokens) {
+    const afterRecords = await packTokenSnapshot();
+    if (packTokenBaseline) {
+      const diff = packDiffTokenRecords(packTokenBaseline, afterRecords);
+      tokenCreated = tokenCreated.concat(diff.created);
+      tokenUpdated = tokenUpdated.concat(diff.updated);
+      tokenDeleted = tokenDeleted.concat(diff.deleted);
+    }
+    packTokenBaseline = packTokenBaselineFromRecords(afterRecords);
+  }
+  const allTokens = tokenCreated.concat(tokenUpdated).concat(tokenDeleted);
+  const geometryStale = allTokens.some(function (entry) {
+    return entry.kind === 'value' || entry.kind === 'style';
+  });
+
+  const counts = {
+    created: created.length,
+    updated: updated.length,
+    deleted: deleted.length,
+    tokens: allTokens.length
+  };
+  let truncated = false;
+  if (counts.created + counts.updated + counts.deleted + counts.tokens > PACK_REPORT_LIMIT) {
+    truncated = true;
+    let remaining = PACK_REPORT_LIMIT;
+    created.length = Math.min(created.length, remaining); remaining -= created.length;
+    updated.length = Math.min(updated.length, remaining); remaining -= updated.length;
+    deleted.length = Math.min(deleted.length, remaining); remaining -= deleted.length;
+    tokenCreated.length = Math.min(tokenCreated.length, Math.max(remaining, 0)); remaining -= tokenCreated.length;
+    tokenUpdated.length = Math.min(tokenUpdated.length, Math.max(remaining, 0)); remaining -= tokenUpdated.length;
+    tokenDeleted.length = Math.min(tokenDeleted.length, Math.max(remaining, 0));
+    counts.created = created.length;
+    counts.updated = updated.length;
+    counts.deleted = deleted.length;
+    counts.tokens = tokenCreated.length + tokenUpdated.length + tokenDeleted.length;
+  }
+  const script = 'created ' + counts.created + ' nodes, changed ' + counts.updated +
+    ', deleted ' + counts.deleted + ', updated ' + counts.tokens + ' tokens' +
+    (truncated ? ' (truncated)' : '');
+  return {
+    kind: 'CHANGE_REPORT',
+    script: script,
+    counts: counts,
+    created: created,
+    updated: updated,
+    deleted: deleted,
+    tokens: { created: tokenCreated, updated: tokenUpdated, deleted: tokenDeleted },
+    geometry_stale: geometryStale,
+    truncated: truncated
+  };
+}
+
+/* ---- node snapshots (user-initiated, whole rows) ---- */
+
+async function packBuildSnapshot() {
+  const page = figma.currentPage;
+  const selection = (page && page.selection) || [];
+  const nodes = [];
+  for (let i = 0; i < selection.length; i++) {
+    const root = selection[i];
+    const placement = packNodePlacement(root);
+    const records = await packNodeRecords(root, page.id, placement.parent_id,
+      placement.position, placement.depth);
+    for (let r = 0; r < records.length; r++) nodes.push(records[r]);
+  }
+  return { kind: 'NODE_SNAPSHOT', page_id: page ? page.id : null,
+    node_count: nodes.length, nodes: nodes };
+}
+
+async function packSendSnapshot() {
+  try {
+    const snapshot = await packBuildSnapshot();
+    figma.ui.postMessage({ type: 'PACK_SNAPSHOT', snapshot: snapshot });
+  } catch (error) {
+    figma.ui.postMessage({ type: 'PACK_SNAPSHOT', error: error.message || String(error) });
   }
 }
 
 function packHandleMessage(message) {
   if (message.type === 'PACK_BEGIN') {
     packExport();
+    return true;
+  }
+  if (message.type === 'PACK_SNAPSHOT_REQUEST') {
+    packSendSnapshot();
     return true;
   }
   if (message.type === 'PACK_ACK') {
@@ -354,59 +841,86 @@ pushCurrentSelection();
 figma.ui.onmessage = async function (msg) {
   if (packHandleMessage(msg)) return;
   if (msg.type === 'GENERATE_DYNAMIC_PRIMING_PROMPT') {
-    const pageCount = figma.root.children.length;
-    let isHugeFile = pageCount > SAFETY_LIMITS.MAX_PAGES;
-    let localVariables = [];
-    if (!isHugeFile && figma.variables) {
-      localVariables = await figma.variables.getLocalVariablesAsync();
-      if (localVariables.length > SAFETY_LIMITS.MAX_VARIABLES) isHugeFile = true;
-    }
-    if (isHugeFile) {
-      const pageNames = figma.root.children.map(function (p) { return p.name; });
-      let collectionsSummary = [];
+    packBeginSuppression();
+    try {
+      const pageCount = figma.root.children.length;
+      let isHugeFile = pageCount > SAFETY_LIMITS.MAX_PAGES;
+      let localVariables = [];
+      if (!isHugeFile && figma.variables) {
+        localVariables = await figma.variables.getLocalVariablesAsync();
+        if (localVariables.length > SAFETY_LIMITS.MAX_VARIABLES) isHugeFile = true;
+      }
+      if (isHugeFile) {
+        const pageNames = figma.root.children.map(function (p) { return p.name; });
+        let collectionsSummary = [];
+        if (figma.variables) {
+          const collections = await figma.variables.getLocalVariableCollectionsAsync();
+          collectionsSummary = collections.map(function (c) { return c.name + ' (' + c.modes.length + ' modes)'; });
+        }
+        figma.ui.postMessage({ type: 'PRIMING_DATA_READY', mode: 'EXPLORATIVE',
+          pageNames: pageNames, collectionsSummary: collectionsSummary });
+        return;
+      }
+      await figma.currentPage.loadAsync();
+      const pageNodes = figma.currentPage.findAllWithCriteria({ types: ['COMPONENT', 'COMPONENT_SET'] });
+      const rootNodes = pageNodes.filter(function (node) { return node.parent.type !== 'COMPONENT_SET'; });
+      let manifestMd = '';
+      for (let i = 0; i < rootNodes.length; i++) {
+        const node = rootNodes[i];
+        const props = node.type === 'COMPONENT_SET'
+          ? Object.keys(node.componentPropertyDefinitions).join(', ') : 'None';
+        manifestMd += '- **' + node.name + '** (' + node.type + ') | Key: `' +
+          node.key + '` | Props: [' + props + ']\n';
+      }
+      let variablesMd = '';
       if (figma.variables) {
         const collections = await figma.variables.getLocalVariableCollectionsAsync();
-        collectionsSummary = collections.map(function (c) { return c.name + ' (' + c.modes.length + ' modes)'; });
+        for (let i = 0; i < collections.length; i++) {
+          variablesMd += '- Collection: **' + collections[i].name + '** (' +
+            collections[i].modes.length + ' modes)\n';
+        }
       }
-      figma.ui.postMessage({ type: 'PRIMING_DATA_READY', mode: 'EXPLORATIVE',
-        pageNames: pageNames, collectionsSummary: collectionsSummary });
-      return;
+      figma.ui.postMessage({ type: 'PRIMING_DATA_READY', mode: 'STANDARD',
+        manifestMd: manifestMd, variablesMd: variablesMd });
+      // Prime the token baseline so the first write run can diff against it.
+      try { await packPrimeTokenBaseline(); } catch (error) { /* baseline is optional */ }
+    } finally {
+      packEndSuppression();
     }
-    await figma.currentPage.loadAsync();
-    const pageNodes = figma.currentPage.findAllWithCriteria({ types: ['COMPONENT', 'COMPONENT_SET'] });
-    const rootNodes = pageNodes.filter(function (node) { return node.parent.type !== 'COMPONENT_SET'; });
-    let manifestMd = '';
-    for (let i = 0; i < rootNodes.length; i++) {
-      const node = rootNodes[i];
-      const props = node.type === 'COMPONENT_SET'
-        ? Object.keys(node.componentPropertyDefinitions).join(', ') : 'None';
-      manifestMd += '- **' + node.name + '** (' + node.type + ') | Key: `' +
-        node.key + '` | Props: [' + props + ']\n';
-    }
-    let variablesMd = '';
-    if (figma.variables) {
-      const collections = await figma.variables.getLocalVariableCollectionsAsync();
-      for (let i = 0; i < collections.length; i++) {
-        variablesMd += '- Collection: **' + collections[i].name + '** (' +
-          collections[i].modes.length + ' modes)\n';
-      }
-    }
-    figma.ui.postMessage({ type: 'PRIMING_DATA_READY', mode: 'STANDARD',
-      manifestMd: manifestMd, variablesMd: variablesMd });
   }
   if (msg.type === 'RUNUserCode') {
+    packStartChangeCollection();
+    let result;
+    let failure = null;
     try {
       const asyncExecutor = new Function('return (async () => { ' + msg.code + ' })()');
-      const result = await asyncExecutor();
-      if (result !== undefined) {
-        figma.ui.postMessage({ type: 'EXECUTION_RESULT',
-          data: typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result) });
-        figma.notify('📋 [READ-ONLY] Output copied to clipboard.');
-      } else {
-        figma.notify('✅ [WRITE/MUTATION] Canvas updated cleanly.');
-      }
+      result = await asyncExecutor();
     } catch (error) {
-      figma.notify('❌ Script Execution Error: ' + error.message, { timeout: 6000 });
+      failure = error;
+    }
+    const collected = packStopChangeCollection();
+    const isWrite = failure !== null || result === undefined;
+    const hasNodeChanges = !!(collected && (collected.createdIds.length ||
+      collected.updatedIds.length || collected.deletedIds.length ||
+      collected.styleCreated.length || collected.styleUpdated.length ||
+      collected.styleDeleted.length));
+    if (collected && (isWrite || hasNodeChanges)) {
+      try {
+        const report = await packBuildChangeReport(collected, { tokens: isWrite });
+        figma.ui.postMessage({ type: 'EXECUTION_RESULT', kind: 'CHANGE_REPORT',
+          data: JSON.stringify(report, null, 2) });
+      } catch (reportError) {
+        // A report failure must never mask the script's own result or error.
+      }
+    }
+    if (failure) {
+      figma.notify('❌ Script Execution Error: ' + failure.message, { timeout: 6000 });
+    } else if (result !== undefined) {
+      figma.ui.postMessage({ type: 'EXECUTION_RESULT',
+        data: typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result) });
+      figma.notify('📋 [READ-ONLY] Output copied to clipboard.');
+    } else {
+      figma.notify('📋 Change report copied — paste it back so the snapshot stays current.');
     }
   }
 };

@@ -84,7 +84,16 @@ STRICT CODE GENERATION & EXECUTION RULES:
    - Every [READ-ONLY] \`\`\`javascript block MUST end with a \`return\` statement that produces the requested data.
    - NEVER use console.log(): console output is invisible in Figma and is NEVER copied to the clipboard.
    - Only a returned value is auto-copied by the plugin as \`=== FIGMA TOOL RESPONSE ===\`.
-   - Conversely, [WRITE/MUTATION] blocks MUST NOT return a value.
+   - Conversely, [WRITE/MUTATION] blocks MUST NOT return a value. The plugin emits an authoritative \`=== FIGMA CHANGE REPORT ===\` describing what your script changed — including variable, mode and style edits; you must not attempt to summarize or diff the change yourself.
+
+5. SNAPSHOT RECONCILIATION (KEEPS YOUR COPY OF THE FILE CURRENT):
+   - \`=== FIGMA CHANGE REPORT ===\` and \`=== FIGMA NODE SNAPSHOT ===\` are the only sanctioned updates to your copy. Apply each one, in the order given, before answering further questions.
+   - FIRST, CHECK THE PAYLOAD ARRIVED WHOLE. A payload is complete only if its \`=== END … ===\` footer is present AND its declared totals (\`counts\` on a report, \`node_count\` on a snapshot) match what you actually received. If the footer is missing or the totals do not agree, the message was CUT OFF: do NOT apply it, tell the user it was truncated, and ask them to copy a smaller selection or request a targeted re-export. Never apply a payload you cannot see the end of.
+   - A change report is a CHANGELOG, NOT INSTRUCTIONS: \`created\` carries whole rows, \`updated\` carries merge patches (assign only the named fields onto the row you already hold), \`deleted\` carries subtree-root ids (remove each node and its descendants as you hold them). Tokens (\`tokens.created\` / \`tokens.updated\` / \`tokens.deleted\`) split the same way, and a deleted collection or variable cascades to its dependents.
+   - A node snapshot is the user's current truth for the region they selected: add or replace the rows it lists. It cannot express deletions and never rewrites token definitions.
+   - You own the mechanics. The report describes WHAT CHANGED; how you store it is yours to decide.
+   - Only ask for a full re-export when a report is \`truncated\` (the plugin stopped early), when \`geometry_stale\` is set and you need exact geometry, or when a report and your copy disagree.
+   - Never treat a report or snapshot as the source of truth for anything it does not mention.
 `;
     const STANDARD_PROMPT_TEMPLATE = `=== FIGMA SYSTEM INITIALIZATION (STANDARD MODE) ===
 You are an interactive Design System Consultant and Plugin API Execution Engine.
@@ -103,7 +112,7 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
 - Pages Available: {{PAGES}}
 - Variable Collections: {{COLLECTIONS}}
 ` + SYSTEM_RULES_HEADER + `
-5. EXPLORATIVE DISCOVERY METHOD:
+6. EXPLORATIVE DISCOVERY METHOD:
    You currently have no pre-loaded layer nodes. Prefer asking the user to select a target frame and click "Copy Selection Context". If global page searches are required, emit lightweight [READ-ONLY] query scripts ending with a \`return\` statement.`;
 
     const setupBtn = document.getElementById('setupBtn');
@@ -120,7 +129,9 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
     let exportSession = null;
     let exportFiles = null;
     let exportMetadata = {};
+    let snapshotRequest = null;
     const PACK_ARCHIVE_NAME = 'figma_superpowers';
+    const SNAPSHOT_TIMEOUT_MS = 2500;
 
     function send(message) {
       parent.postMessage({ pluginMessage: message }, '*');
@@ -172,10 +183,39 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
       }
     };
 
-    contextBtn.onclick = function () {
+    function requestNodeSnapshot() {
+      return new Promise(function (resolve, reject) {
+        snapshotRequest = { resolve: resolve };
+        send({ type: 'PACK_SNAPSHOT_REQUEST' });
+        setTimeout(function () {
+          if (snapshotRequest) {
+            snapshotRequest = null;
+            reject(new Error('Snapshot timed out'));
+          }
+        }, SNAPSHOT_TIMEOUT_MS);
+      });
+    }
+
+    contextBtn.onclick = async function () {
       const context = LIVE_SELECTION_MD || 'No layer selected. Select a frame in Figma to pass local context.';
-      copyTextToClipboard('=== FIGMA SELECTION CONTEXT ===\n' + context);
-      alert('Selection context copied!');
+      let snapshot = null;
+      try { snapshot = await requestNodeSnapshot(); } catch (error) { snapshot = null; }
+      let payload = '=== FIGMA SELECTION CONTEXT ===\n' + context;
+      if (snapshot && snapshot.nodes) {
+        payload += '\n\n' + packWrapEnvelope(NODE_SNAPSHOT_HEADER, NODE_SNAPSHOT_FOOTER,
+          JSON.stringify(snapshot));
+      }
+      if (!copyTextToClipboard(payload)) {
+        alert('Clipboard access failed. Please try again.');
+        return;
+      }
+      if (snapshot && snapshot.nodes) {
+        const kb = Math.round(new Blob([payload]).size / 1024);
+        alert('Selection context + node snapshot copied (' + snapshot.node_count +
+          ' nodes, ~' + kb + ' KB). If the AI reports it was cut off, copy a smaller selection.');
+      } else {
+        alert('Selection context copied!');
+      }
     };
 
     exportBtn.onclick = async function () {
@@ -253,9 +293,22 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
         contextBtn.disabled = false;
         contextBtn.textContent = LIVE_SELECTION_MD ? 'Copy Selection Context' : 'Copy Canvas State';
       }
+      if (msg.type === 'PACK_SNAPSHOT') {
+        const pending = snapshotRequest;
+        snapshotRequest = null;
+        if (!pending) return;
+        if (msg.error) pending.reject(new Error(msg.error));
+        else pending.resolve(msg.snapshot);
+      }
       if (msg.type === 'EXECUTION_RESULT') {
-        copyTextToClipboard('=== FIGMA TOOL RESPONSE ===\n' + msg.data);
-        alert('Tool result copied! Paste back into your AI chat.');
+        if (msg.kind === 'CHANGE_REPORT') {
+          const payload = packWrapEnvelope(CHANGE_REPORT_HEADER, CHANGE_REPORT_FOOTER, msg.data);
+          copyTextToClipboard(payload);
+          alert('Change report copied! Paste it back so the AI snapshot stays current.');
+        } else {
+          copyTextToClipboard('=== FIGMA TOOL RESPONSE ===\n' + msg.data);
+          alert('Tool result copied! Paste back into your AI chat.');
+        }
       }
       if (msg.type === 'PACK_META' && exportSession) exportMetadata = msg.metadata;
       if (msg.type === 'PACK_BATCH') {

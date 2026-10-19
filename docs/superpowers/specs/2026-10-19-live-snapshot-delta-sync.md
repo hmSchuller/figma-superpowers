@@ -1,7 +1,11 @@
 # In-Session Snapshot Delta Sync Spec
 
 Date: 2026-10-19
-Status: **Proposed — design only, no runtime changes made.**
+Status: **Implemented** — `src/exporter.js` (extraction + change collector + snapshots),
+`src/code.js` (run wrapper), `src/ui.html` (envelopes, snapshot button, prompt rules) and
+`src/database.js` (`packAgentPrompt`, shared envelope constants/checker). Automated tests
+cover the collector, snapshots, envelopes and SQL reconciliation; the live Figma runtime
+(`documentchange` / `stylechange`, iframe SQLite, clipboard) still needs manual verification.
 Revision 2 (2026-10-19): variable and style capture moved **into v1** (was listed as the
 biggest correctness hole and deferred). Styles ride Figma's `stylechange` feed; variables
 have no event at all, so they are captured by a bounded local-token snapshot diff.
