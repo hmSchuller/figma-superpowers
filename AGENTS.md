@@ -1,42 +1,104 @@
-# AGENTS.md — Figma Superpowers
+# AGENTS.md — Figma Superpowers (FigmaPack)
 
 ## What this repo is
 
-A pure-JavaScript Figma plugin (`code.js` backend + `ui.html` frontend, wired by `manifest.json`) that turns an **external AI chat** (Gemini, ChatGPT, Claude — user pastes back and forth, no API calls from the plugin) into a design-system assistant with read/write access to the canvas via pasted ` ```javascript ` blocks.
+A pure-JavaScript Figma plugin (built `code.js` sandbox + `ui.html` iframe, wired by `manifest.json`) with two cooperating features:
 
-No build step. Edit `code.js` / `ui.html` directly. `npm run lint` (ESLint) covers JS only.
+1. **Superpowers clipboard workflow** — turns an **external AI chat** (Gemini, ChatGPT, Claude; the user pastes back and forth, the plugin makes no API calls) into a design-system assistant with read/write canvas access via pasted ` ```javascript ` blocks.
+2. **FigmaPack exporter** — walks every page/layer and all local variables, modes and styles, builds an **in-memory SQLite** snapshot with an FTS index plus a companion Markdown agent prompt, and offers them for download. No network access (`manifest.json` allows `"none"`), no server, no credentials.
 
-## What "prompt" means here — read this first
+## Build & sources — read this before editing
 
-A "prompt" in this repo is a **clipboard payload handed to an external chatbot**, not a call to an LLM API. There are exactly three payload types, each with a fixed header the AI keys off:
+**`src/` is the source of truth. Never hand-edit the root `code.js` / `ui.html`; they are build artifacts that get overwritten.**
+
+| Source | Becomes |
+| --- | --- |
+| `src/exporter.js` + `src/code.js` | concatenated into root `code.js` |
+| `src/ui.html` + `src/database.js` + embedded `sql.js-fts5` bundle | root `ui.html` |
+| `src/zip.js` (concatenated into the same embed as `src/database.js`) | root `ui.html` |
+| `build.mjs` | also writes `LICENSE-SQLJS.txt` and checks for unreplaced placeholders |
+
+```sh
+npm install     # fetches the FTS-enabled SQLite asm.js distribution
+npm test        # node tests/test-exporter.cjs && node tests/test-zip.cjs && node tests/test-prompt.cjs && python3 tests/test-schema.py
+npm run build   # writes manifest-adjacent artifacts: code.js, ui.html, LICENSE-SQLJS.txt
+```
+
+Distribute the built `manifest.json` + `code.js` + `ui.html` (plus `LICENSE` and `LICENSE-SQLJS.txt`) — not the source tree or `node_modules`.
+
+`src/ui.html` contains two placeholders that `build.mjs` fills: `/*__EMBED_SQLITE__*/` (the minified SQLite engine) and `/*__EMBED_PACK_DB__*/` (the contents of `src/database.js` **plus** `src/zip.js`). Keep them, and keep the build's post-check passing.
+
+- **Build gotcha:** `build.mjs` injects those libraries via replacer **functions** (`() => text`), not replacement strings. The minified SQLite bundle contains `$&` / `$'` sequences that `String#replace` would expand, re-injecting the placeholder and tripping the guard. Do not "simplify" this back to a string replacement.
+
+## What "prompt" means here
+
+A "prompt" is a **clipboard payload handed to an external chatbot**, not a call to an LLM API. Exactly three payload types, each with a fixed header the AI keys off:
 
 1. **System prompt** (`=== FIGMA SYSTEM INITIALIZATION (STANDARD MODE) ===` or `(EXPLORATIVE LAZY MODE)`) — one-time priming: component index + variable collections + the rules header. Built on scan, copied once per chat.
 2. **Selection context** (`=== FIGMA SELECTION CONTEXT ===`) — Markdown snapshot of the user's current Figma selection. Copied on demand, pasted into the ongoing chat when the AI needs canvas detail.
-3. **Tool response** (`=== FIGMA TOOL RESPONSE ===`) — result of a `[READ-ONLY]` script the plugin executed. Auto-copied by the plugin; the user pastes it back into the chat to continue the loop.
+3. **Tool response** (`=== FIGMA TOOL RESPONSE ===`) — result of a `[READ-ONLY]` script the plugin executed. Auto-copied by the UI (`document.execCommand('copy')`) with a confirming `alert`; the user pastes it back to continue the loop. There is currently **no** staging buffer / "Copy Result" fallback — a copy failure only surfaces as the same alert, so a README-level "clipboard fallback" still needs building (and would live in the UI, never by weakening the AI's `return` obligation).
 
-The system prompt also contains a **`STRICT CODE GENERATION & EXECUTION RULES` header** (`SYSTEM_RULES_HEADER` in `ui.html`). That is a behavioral contract constraining what the AI may output (selection-first, action-type flags, zero placeholders) so its code runs "as is" when pasted back. If you change execution semantics in `code.js`, you must update that header to match.
+The system prompt also contains a **`STRICT CODE GENERATION & EXECUTION RULES` header** (`SYSTEM_RULES_HEADER` in `src/ui.html`). It is a behavioral contract constraining what the AI may output (selection-first, action-type flags, zero placeholders) so its code runs "as is" when pasted back. If you change execution semantics in `src/code.js`, update that header to match.
 
 ## Where prompts live (source of truth)
 
-- **`ui.html` is the source of truth.** Runtime templates are JS constants: `SYSTEM_RULES_HEADER`, `STANDARD_PROMPT_TEMPLATE` (`{{MANIFEST}}`, `{{VARIABLES}}`), `EXPLORATIVE_PROMPT_TEMPLATE` (`{{PAGES}}`, `{{COLLECTIONS}}`). Placeholders are filled by data posted from `code.js` (`PRIMING_DATA_READY` handler).
-- **`prompts/` is legacy and stale** (predates the Standard/Explorative split and the tooling bridge). It is never read at runtime. Do not treat it as authoritative; do not add new templates there. If you touch it at all, it should be to delete it or sync it from `ui.html` — never the reverse.
+- **`src/ui.html` is the source of truth.** Runtime templates are JS constants: `SYSTEM_RULES_HEADER`, `STANDARD_PROMPT_TEMPLATE` (`{{MANIFEST}}`, `{{VARIABLES}}`), `EXPLORATIVE_PROMPT_TEMPLATE` (`{{PAGES}}`, `{{COLLECTIONS}}`). Placeholders are filled by data posted from `src/code.js` (`PRIMING_DATA_READY` handler). The same strings end up in the built `ui.html`.
+- **`prompts/` is legacy and stale** (predates the Standard/Explorative split and the tooling bridge). It is never read at runtime. Do not treat it as authoritative; do not add new templates there. If you touch it at all, it should be to delete it or sync it from `src/ui.html` — never the reverse.
 
 ## Runtime architecture
 
-- `code.js` (sandbox): pre-flight check (`SAFETY_LIMITS`: `MAX_PAGES: 8`, `MAX_VARIABLES: 300` enforced; `MAX_COMPONENTS` defined but **unenforced**), Markdown serializers (`serializeNodeMarkdown`, component/variable index builders), `selectionchange` → `SELECTION_UPDATED` push, and the `RUNUserCode` executor (`new Function("return (async () => { … })()")`).
-- `ui.html` (iframe): buttons (`Evaluate & Scan File` → `Copy System Prompt`; `Copy Selection Context` / `Copy Canvas State`), `smartPasteField` paste zone (extracts first ```` ```javascript ```` block; fallback accepts raw text containing `figma` or starting with `return`), status tag (`Standard` / `Explorative`), message bridge (`parent.postMessage` → `figma.ui.onmessage`; `figma.ui.postMessage` → `window.onmessage`).
-- Message types: `GENERATE_DYNAMIC_PRIMING_PROMPT` → `PRIMING_DATA_READY` (`mode: STANDARD | EXPLORATIVE`); `SELECTION_UPDATED` (`nodeMarkdown`, `hasSelection`); `RUNUserCode` → `EXECUTION_RESULT` (auto-copied as tool response).
-- Execution semantics: script `return`s a value → `[READ-ONLY]` query, result JSON/stringified and auto-copied; returns `undefined` → `[WRITE/MUTATION]`; throws → error notification. All AI-generated example code must be **ES6-only** (no `?.` / `??`) — the plugin runtime throws on modern syntax.
+### `src/code.js` — plugin sandbox (`code.js`)
+
+- `figma.showUI`, pre-flight check (`SAFETY_LIMITS`: `MAX_PAGES: 8`, `MAX_VARIABLES: 300` enforced; `MAX_COMPONENTS: 150` defined but **unenforced**), Markdown serializers (`serializeNodeMarkdown`, component/variable index builders), `selectionchange` → `SELECTION_UPDATED` push, and the `RUNUserCode` executor (`new Function("return (async () => { … })()")`).
+- Delegates FigmaPack messages first: `figma.ui.onmessage` calls `packHandleMessage(msg)` (defined in the concatenated `exporter.js`) and returns early on a match.
+
+### `src/exporter.js` — FigmaPack extraction (sandbox)
+
+- Iterative (non-recursive) layer walk over `page.loadAsync()`-ed pages with `skipInvisibleInstanceChildren = false`, so hidden instance descendants are included.
+- `packPlain`/`packJSON` sanitize Figma values (drops `figma.mixed`, functions, non-finite numbers; depth-capped) into `properties_json`.
+- `packPostBatch` streams `PACK_BATCH` messages of `PACK_BATCH_SIZE: 200` records and **awaits a `PACK_ACK`** per batch → bounded queueing. `PACK_CANCEL` flips `state.cancelled`.
+- Emits record kinds: `page`, `node`, `binding` (`node_variable_bindings`), `link` (`node_links`, instance + prototype), `collection`, `mode`, `variable`, `value`, `style`. Also `PACK_META` (counts, `export_complete`, etc.), `PACK_PROGRESS`, `PACK_DONE`, `PACK_ERROR`.
+- `PACK_DONE` is only sent after a full successful walk — an error aborts rather than shipping a partial DB.
+
+### `src/database.js` — UI iframe (`PACK_SCHEMA`, insert helpers)
+
+- `PACK_SCHEMA`: `metadata`, `pages`, `nodes` (+ indexes), `nodes_fts`, `node_links`, `node_variable_bindings`, `variable_collections`, `variable_modes`, `variables`, `variable_values`, `styles`. Nodes keyed by `figma_id`; parents/pages stored by ID, not repeated paths.
+- `packOpenDatabase` opens `new SQL.Database()` in a single transaction with prepared inserts; `packInsertBatch` maps each record's fields.
+- `packCreateFTS` tries FTS5 (`content='nodes'`, rebuild) and **falls back to FTS4** if unavailable; the choice is recorded as `fts_version` and reflected in the prompt.
+- `packFinish` sets metadata, commits, builds the index, verifies `PRAGMA integrity_check` (`ok`), and returns `{ binary, prompt, fts }`. UI asserts node/page counts match before finishing (`Node/Page count mismatch`).
+- `packAgentPrompt(db, fts, rulesHeader)` generates the Markdown `FIGMAPACK AGENT PROMPT` (consultant role line, counts, table guide, discovery SQL, "local-only variables" caveat, no-images caveat) and appends `rulesHeader` last. `rulesHeader` is optional but the UI always passes `SYSTEM_RULES_HEADER`, so the file prompt carries the same execution contract as the in-plugin system prompt.
+- `packDownload` triggers the download clicks. `packFinish` output is handed to `src/zip.js`, which produces `figma_superpowers.zip` containing `figma_superpowers.db` + `FIGMAPACK_AGENT_PROMPT.md`.
+
+### `src/zip.js` — download packaging (UI iframe)
+
+- Hand-rolled minimal ZIP writer: `packCrc32` (table-driven), `packZipBuild` (local file headers + central directory + EOCD, all little-endian), `packDeflateRaw` (`CompressionStream('deflate-raw')`), and `packZip`.
+- `packZip` Deflates each entry only when the result is smaller, otherwise stores it (method 0) — so it degrades gracefully to a valid uncompressed archive where `CompressionStream` is missing.
+- `packZip` is **async**; the UI's `PACK_DONE` handler is `window.onmessage = async function`. Keep it async if you touch the download path.
+- Output naming is fixed by `PACK_ARCHIVE_NAME` (`figma_superpowers`); the Figma file name is *not* used for the artifact name (it only remains as `metadata.file_name`).
+- Pure enough to run under Node: `tests/test-zip.cjs` evaluates the file with `node:vm` and has Python's `zipfile` validate the result.
+
+### `src/ui.html` — iframe UI
+
+- Buttons: `Evaluate & Scan File` → `Copy System Prompt`; `Copy Selection Context` / `Copy Canvas State`; `Export Complete File to SQLite` (toggles to `Cancel Export`); `Download ZIP`; `Download Prompt`.
+- `smartPasteField` paste zone extracts the first ` ```javascript ` block; fallback accepts raw text containing `figma` or starting with `return`.
+- Status tag (`Standard` / `Explorative`) and `packStatus` live region for export progress.
+- Message bridge: `parent.postMessage({ pluginMessage })` → `figma.ui.onmessage`; `figma.ui.postMessage` → `window.onmessage`.
+- Superpowers message types: `GENERATE_DYNAMIC_PRIMING_PROMPT` → `PRIMING_DATA_READY` (`mode: STANDARD | EXPLORATIVE`); `SELECTION_UPDATED` (`nodeMarkdown`, `hasSelection`); `RUNUserCode` → `EXECUTION_RESULT`.
+- FigmaPack message types: `PACK_BEGIN`, `PACK_BATCH`, `PACK_ACK`, `PACK_CANCEL`, `PACK_META`, `PACK_PROGRESS`, `PACK_DONE`, `PACK_ERROR`.
+- Execution semantics: script `return`s a value → `[READ-ONLY]` query, result JSON/stringified and copied as `=== FIGMA TOOL RESPONSE ===`; returns `undefined` → `[WRITE/MUTATION]`; throws → error notification. All AI-generated example code must be **ES6-only** (no `?.` / `??`) — the plugin runtime throws on modern syntax.
 - Standard mode scans the **current page only** for components; Explorative mode sends a file-map skeleton (page names, collection names + mode counts) and relies on selection context + `[READ-ONLY]` discovery queries.
 
 ## Conventions for changes
 
-- Change data and template together: a new `{{PLACEHOLDER}}` in `ui.html` needs a matching field in the `PRIMING_DATA_READY` payload in `code.js`, and vice versa. Keep header strings (`=== FIGMA … ===`) byte-stable — the AI and the paste regex depend on them.
+- Change data and template together: a new `{{PLACEHOLDER}}` in `src/ui.html` needs a matching field in the `PRIMING_DATA_READY` payload in `src/code.js`, and vice versa. Keep header strings (`=== FIGMA … ===`) byte-stable — the AI and the paste regex depend on them.
+- Change schema and both sides together: a new record `kind` needs an entry in `PACK_INSERTS`/`PACK_COLUMNS` (`src/database.js`), a matching table in `PACK_SCHEMA`, and a matching emitter in `src/exporter.js`. `tests/test-schema.py` re-parses `PACK_SCHEMA` from source, so schema drift breaks tests.
 - Keep selection serialization lightweight Markdown (type, name, WxH, fill hex, 30-char text snippet, variant props, auto-layout). Do not regress to raw JSON dumps.
-- Keep the rules header's four guarantees intact (selection-context preference, Action Type + Expected Outcome flag, as-is execution, READ-ONLY clipboard contract: return the complete data for automatic clipboard copy, never `console.log`) unless the execution engine changes accordingly.
-- Docs: `README.md` is the user contract; `docs/superpowers/specs/` holds design history. Update both when behavior changes.
+- Keep the rules header's four guarantees intact (selection-context preference, Action Type + Expected Outcome flag, as-is execution, READ-ONLY clipboard contract: return the complete data for clipboard copy, never `console.log`) unless the execution engine changes accordingly. `SYSTEM_RULES_HEADER` in `src/ui.html` is the single source of truth: it is embedded in the inline system prompt *and* threaded through `packFinish(session, metadata, SYSTEM_RULES_HEADER)` → `packAgentPrompt` into the downloadable prompt. If you duplicate the header text anywhere, both init paths drift.
+- Docs: `README.md` is the user contract; `docs/superpowers/specs/` (and `plans/`) hold design history. Update them when behavior changes. There is no ESLint config in this repo, despite older notes.
 
 ## Verification
 
+- After any edit to `src/**`, run `npm test` then `npm run build`. A green build means every placeholder resolved and the SQLite license was found.
+- Tests are small but real: `tests/test-exporter.cjs` runs `src/exporter.js` against a mocked Figma API in a `node:vm` sandbox (pages, nodes, bindings, instance links, styles); `tests/test-zip.cjs` runs `src/zip.js` the same way and has Python's `zipfile` verify the archive (`testzip()` CRCs, entry names, contents); `tests/test-prompt.cjs` runs `packAgentPrompt` against a stubbed `db` and asserts the role line, counts and appended rules header; `tests/test-schema.py` re-parses `PACK_SCHEMA` and checks native SQLite integrity + FTS5 search.
 - Re-read the edited template + its data provider in full; confirm placeholders resolve and headers match.
-- No automated tests exist — manually walk the affected loop (scan → copy → paste-back → tool response) where possible.
+- What tests do **not** cover: the live Figma runtime, iframe SQLite execution (`sql.js-fts5` inside the plugin), download behavior, and the clipboard round-trip. Walk the affected loop (scan → copy → paste-back → tool response, or export → download → query) manually in Figma before releasing.

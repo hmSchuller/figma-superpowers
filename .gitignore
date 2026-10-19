@@ -6,3 +6,9 @@ node_modules
 out/
 dist/
 .worktrees/
+
+# macOS
+.DS_Store
+
+# Scratch clipboard dumps from tool-response round-trips
+toolresponse.txt

@@ -1,22 +1,13 @@
 {
-  "name": "figma-superpowers",
-  "version": "1.0.0",
-  "description": "Your Figma Plugin",
-  "main": "code.js",
+  "name": "figma-superpowers-figmapack",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Offline SQLite design snapshots added to Figma Superpowers",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "watch": "npm run build -- --watch"
+    "build": "node build.mjs",
+    "test": "node tests/test-exporter.cjs && node tests/test-zip.cjs && node tests/test-prompt.cjs && python3 tests/test-schema.py"
   },
-  "author": "",
-  "license": "",
   "devDependencies": {
-    "@eslint/js": "^9.39.4",
-    "@figma/eslint-plugin-figma-plugins": "*",
-    "@figma/plugin-typings": "*",
-    "eslint": "^9.39.4",
-    "typescript": "^5.9.3",
-    "typescript-eslint": "^8.57.1"
+    "sql.js-fts5": "1.4.0"
   }
 }

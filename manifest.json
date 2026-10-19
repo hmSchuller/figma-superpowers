@@ -3,14 +3,9 @@
   "id": "1641734303540361085",
   "api": "1.0.0",
   "main": "code.js",
+  "documentAccess": "dynamic-page",
   "capabilities": [],
-  "editorType": [
-    "figma"
-  ],
+  "editorType": ["figma"],
   "ui": "ui.html",
-  "networkAccess": {
-    "allowedDomains": [
-      "none"
-    ]
-  }
+  "networkAccess": { "allowedDomains": ["none"] }
 }

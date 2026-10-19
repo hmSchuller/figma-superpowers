@@ -1,103 +1,150 @@
-# Figma Superpowers
+# Figma Superpowers — FigmaPack prototype
 
-A Figma plugin that bridges your design system with AI chat assistants. Scan the file into a system prompt, discuss with any AI assistant (Gemini, ChatGPT, Claude, etc.), then paste AI-generated code back into Figma to run layout queries or mutations — with results copied back to the chat.
+Adds an **Export Complete File to SQLite** action to the existing
+[Figma Superpowers](https://github.com/hmSchuller/figma-superpowers) plugin. The
+original Evaluate & Scan, Copy Selection Context, and Tooling Clipboard Bridge
+remain present. Instead of flooding a chat with Figma JSON, the plugin exports
+an agent-oriented **SQLite snapshot** and generates a companion Markdown prompt,
+just like GitPack, delivered as a single `figma_superpowers.zip` archive.
 
-## How It Works
+The generated prompt carries the same consultant role and the same
+`STRICT CODE GENERATION & EXECUTION RULES` header as the plugin's inline
+**Copy System Prompt** button, so a chat primed from either path returns
+paste-ready ` ```javascript ` blocks instead of loose prose.
 
-1. **Evaluate & Scan File** — Click `Evaluate & Scan File`. The plugin pre-flights file size and builds a system prompt (Standard or Explorative, see below). Click again to copy it (`Copy System Prompt`) and paste into a new AI chat.
-2. **Chat with AI** — Ask design-system questions, request critique, or plan changes. The AI answers from the scanned index first.
-3. **Copy Selection Context When Needed** — Select layers in Figma and click `Copy Selection Context` (or `Copy Canvas State` when nothing is selected). Paste the `=== FIGMA SELECTION CONTEXT ===` markdown into the chat for canvas-specific advice or executable changes.
-4. **Paste Code to Execute** — When the AI returns a ` ```javascript ` block, paste it into the plugin's **Tooling Clipboard Bridge** field. The plugin extracts the code and runs it against your Figma document.
-5. **Paste Tool Results Back** — A `[READ-ONLY]` script must return the complete requested data. The plugin copies that returned value to the clipboard as a `=== FIGMA TOOL RESPONSE ===` payload. Paste it back into the chat to continue the loop. If it mutates the canvas (`[WRITE/MUTATION]`), you just get a success notification.
+## For designers (after the maintainer packages the plugin)
 
-## Scan Modes
+1. Open the Figma design file and launch Figma Superpowers.
+2. Click **Export Complete File to SQLite**. The export explicitly loads all
+   pages, walks all layers, collects local variables/modes, and collects local styles.
+3. Wait for the scan and SQLite index generation to finish.
+4. Click **Download ZIP**. The archive holds `figma_superpowers.db` and
+   `FIGMAPACK_AGENT_PROMPT.md` (use **Download Prompt** on its own if you prefer
+   the Markdown by itself). Separate downloads are intentional because some Figma
+   environments restrict automatic downloads.
+5. Extract the archive and upload **both** files to ChatGPT or another LLM and ask
+   about the screens, design system, accessibility, token usage, components, or
+   implementation plan.
 
-`code.js` runs a pre-flight check before indexing (`SAFETY_LIMITS`: `MAX_PAGES: 8`, `MAX_VARIABLES: 300`):
+No Node.js, Python, Figma personal access token, external server, or
+network access is needed by designers. The Figma plugin reads data locally using
+Figma's built-in Plugin API. The database engine is pre-bundled into the plugin's
+iframe. The manifest explicitly disallows network access.
 
-| Mode | Trigger | System prompt contains |
-|---|---|---|
-| **Standard** | ≤ 8 pages and ≤ 300 local variables | `=== FIGMA SYSTEM INITIALIZATION (STANDARD MODE) ===` + Markdown component index (`name`, `type`, `key`, props) for the current page + variable collection list |
-| **Explorative (lazy)** | > 8 pages or > 300 variables | `=== FIGMA SYSTEM INITIALIZATION (EXPLORATIVE LAZY MODE) ===` + file-map skeleton only (page names, collection names + mode counts). No layer nodes pre-loaded |
+## For the plugin maintainer
 
-The UI shows the active mode in a status tag (`⚡ Standard Mode Active` / `🔍 Large File: Explorative Mode Active`).
+The checked-in files in `src/` are the **source** and are deliberately small.
+The SQLite library is installed **only when preparing the plugin release**.
 
-In Explorative mode the AI has no canvas nodes up front. The preferred discovery path is: select a frame → `Copy Selection Context`. Global searches (find components by name, list variables) go through lightweight `[READ-ONLY]` query scripts that return the complete clipboard-ready result.
-
-## AI Contract (Human-in-the-Loop Rules)
-
-Every system prompt embeds a `STRICT CODE GENERATION & EXECUTION RULES` header the AI must follow:
-
-1. **Selection-context first** — For inspecting the element the user is looking at, ask for `Copy Selection Context` instead of generating a `figma.currentPage.selection` reader. Only generate `[READ-ONLY]` queries for global searches (unselected pages, find-by-name, variable details).
-2. **Action Type + Expected Outcome flag** — Immediately before any ` ```javascript ` block the AI must state `**Action Type**: [READ-ONLY] or [WRITE/MUTATION]` and `**Expected Outcome**: ...`.
-3. **Zero placeholders / "as is" execution** — Code must run immediately when pasted. No `YOUR_NODE_ID_HERE` / `<component-name>` placeholders. Missing IDs must be resolved via dynamic query (`findOne`, `selection[0]`) or by asking for selection context first.
-4. **READ-ONLY clipboard contract** — Every `[READ-ONLY]` block must return the complete requested data in a clipboard-ready object, array, or string. The plugin automatically copies that returned value as `=== FIGMA TOOL RESPONSE ===`; a return such as `"done"` or a partial summary is not sufficient. `console.log` is forbidden: console output is invisible in Figma and never reaches the clipboard. `[WRITE/MUTATION]` blocks must not return a value.
-
-## Tooling Clipboard Bridge
-
-The paste zone (`smartPasteField`) accepts:
-
-- A full AI reply containing a single ` ```javascript ... ``` ` block (extracted via regex), or
-- Raw code containing `figma` or starting with `return` (fences stripped).
-
-Execution (`code.js` `RUNUserCode` handler) wraps the code in `(async () => { ... })()` via `new Function`:
-
-- Returns a value → treated as `[READ-ONLY]` query. The complete result is posted back as `EXECUTION_RESULT` and auto-copied to the clipboard as `=== FIGMA TOOL RESPONSE ===`, notification: `📋 [READ-ONLY] Output copied to clipboard.` Paste it back into the AI chat.
-- Returns `undefined` → treated as `[WRITE/MUTATION]`. Notification: `✅ [WRITE/MUTATION] Canvas updated cleanly.`
-- Throws → notification: `❌ Script Execution Error: ...`
-
-Generated AI code must stay ES6-compatible: no optional chaining (`?.`) or nullish coalescing (`??`) — the plugin runtime throws on those.
-
-## Selection Context Format
-
-Selection is serialized in `code.js` (`serializeNodeMarkdown`) as lightweight Markdown (~70% smaller than raw JSON):
-
-```markdown
-=== FIGMA SELECTION CONTEXT ===
-- **FRAME**: "Hero" [1440x900] | Fills: #FFFFFF | AutoLayout: VERTICAL (gap: 24px)
-  - **TEXT**: "Welcome" [200x40] | Text: "Welcome to..."
-  - **COMPONENT**: "Button/Primary" [120x40] | Props: {"Variant":"Primary"}
-```
-
-Per node: `type`, `name`, `WxH`, fill hex colors, 30-char text snippet, variant props, auto-layout direction + gap; children recursed with indentation.
-
-## Project Structure
-
-```
-figma-superpowers/
-├── code.js            # Plugin backend — pre-flight check, Markdown serialization, code execution
-├── ui.html            # Plugin UI + runtime prompt templates (source of truth for prompts)
-├── manifest.json      # Figma plugin manifest
-├── package.json       # Dev dependencies (ESLint, TypeScript, Figma typings)
-├── prompts/           # Legacy reference only — stale, not read at runtime
-│   ├── system-prompt.txt
-│   └── context-capsule.txt
-├── docs/superpowers/  # Design specs and implementation plans
-└── README.md
-```
-
-> **Note:** `ui.html` is the source of truth for prompts (`SYSTEM_RULES_HEADER`, `STANDARD_PROMPT_TEMPLATE`, `EXPLORATIVE_PROMPT_TEMPLATE`). The files in `prompts/` predate the Standard/Explorative split and the tooling-bridge loop and are kept for reference only.
-
-## Setup
-
-1. Download the latest release and unzip it
-2. In Figma, go to **Plugins > Development > Import plugin from manifest**
-3. Select the `manifest.json` file from the unzipped folder
-
-That's it — no compilation or build step required. The plugin runs on pure JavaScript (UI: 240×340 `Superpowers Hub` panel).
-
-## Development
-
-The plugin is pure JavaScript — no compilation needed. Edit `code.js` or `ui.html` directly.
-
-For linting:
-
-```bash
+```sh
 npm install
-npm run lint
+npm test
+npm run build
 ```
 
-See `docs/superpowers/specs/` for design history, including the large-file / tooling-bridge spec.
+The build writes `code.js` and `ui.html` alongside `manifest.json`. Distribute
+those **three built files** (plus `LICENSE` and generated `LICENSE-SQLJS.txt`). Designers install the prepared
+Figma plugin, not the source repository. In Figma: Plugins → Development →
+Import plugin from manifest, selecting the built `manifest.json`.
 
-## License
+The build uses an offline, embedded `sql.js-fts5` asm.js distribution. This is
+larger/slower than a WASM build but avoids external fetches and extra binary
+assets. It falls back to FTS4 if the runtime reports no FTS5 support. The
+companion prompt automatically reflects which search engine was built.
 
-MIT
+Downloads are bundled into `figma_superpowers.zip` by `src/zip.js`. Entries are
+Deflate-compressed when `CompressionStream('deflate-raw')` is available and
+stored uncompressed otherwise, so the archive is always valid and needs no
+third-party packaging dependency at runtime.
+
+> **Prototype verification status:** `npm test` (Node-based mocked Figma API
+> export + native SQLite schema/FTS5 search) and `npm run build` (placeholder
+> resolution, embedded SQLite injection, license copy) pass locally and produce
+> the distributable `code.js` + `ui.html`. What remains unverified here is the
+> live Figma runtime: executing the bundled `sql.js-fts5` inside the plugin
+> iframe, the download flow, and the clipboard round-trip. The maintainer should
+> verify the built plugin inside Figma before distributing it to designers.
+
+## Database contents
+
+| Table | Use |
+| --- | --- |
+| `metadata` | File information, export counts, completeness, embedded agent prompt (DB context **plus** the shared execution-rules header), search engine |
+| `pages` | Every Figma page, order and page-specific mode overrides |
+| `nodes` | Every layer with Figma ID, parent/page relationships, name, full text, geometry, properties JSON |
+| `nodes_fts` | FTS5 or FTS4 index of layer names and text |
+| `node_links` | Component-instance references and prototype navigation |
+| `node_variable_bindings` | Concrete node property paths bound to variable IDs |
+| `variable_collections` | Local collection details |
+| `variable_modes` | Every named collection mode |
+| `variables` | Local variable identity, type, scopes, syntax |
+| `variable_values` | Per-mode values and alias relationships |
+| `styles` | Local paint/text/effect/grid styles |
+
+Nodes are keyed by a stable Figma ID. Parent and page IDs are stored instead
+of repeating long hierarchy paths in every row. The UI sends bounded batches
+with explicit acknowledgments, preventing unbounded queued messages.
+
+### Example SQL
+
+```sql
+-- Find top-level frames/screens
+SELECT p.name AS page, n.figma_id, n.name, n.width, n.height
+FROM nodes n JOIN pages p ON p.figma_id=n.page_id
+WHERE n.depth=0 AND n.type='FRAME';
+
+-- Find button labels and text
+SELECT n.figma_id,n.name,n.text,n.properties_json
+FROM nodes_fts JOIN nodes n ON n.id=nodes_fts.rowid
+WHERE nodes_fts MATCH 'confirm';
+
+-- Find where a token is used
+SELECT n.figma_id,n.name,b.field
+FROM node_variable_bindings b
+JOIN nodes n ON n.figma_id=b.node_id
+JOIN variables v ON v.figma_id=b.variable_id
+WHERE v.name='color/action/primary';
+```
+
+## Scope and tradeoffs
+
+- **Complete node enumeration**, including pages that aren't currently loaded,
+  and hidden instance descendants. No arbitrary page-count or node-count cutoff.
+- All local variables, variable modes, and their values are extracted. Library
+  variables not local to the file are not expanded; unresolved aliases remain
+  visible as IDs and are called out in the prompt.
+- No generated code, network calls, credentials, collaboration comments,
+  version history, or live synchronization is included.
+- Design properties are compacted into `properties_json`; image bytes and image
+  previews are **not** exported. This keeps the database much smaller than a
+  screenshot archive. Use Copy Selection Context or provide screenshots when
+  visual fidelity is essential.
+- SQLite is created in memory. Truly enormous Figma documents can exceed the
+  plugin iframe memory budget. A later version could add page-selective
+  snapshotting, preview packs, incremental diffs, or a multi-part exporter. The
+  design for keeping one snapshot fresh within a session (instead of re-exporting)
+  is specified in `docs/superpowers/specs/2026-10-19-live-snapshot-delta-sync.md`.
+- Old original `RUNUserCode` executes pasted code with Figma privileges: only
+  paste code you trust. The SQLite exporter itself is **read-only**.
+- An error aborts the export rather than providing a silently incomplete DB.
+- The source is a prototype patch, not a published Figma release.
+
+## Project layout
+
+```text
+manifest.json       existing plugin ID, dynamic page loading and network restriction
+src/code.js         original Superpowers clipboard workflow, adapted to dynamic pages
+src/exporter.js     new API extraction + bounded streaming to UI
+src/ui.html         combined Superpowers UI template with FigmaPack buttons
+src/database.js     SQL schema, inserts, full-text index, prompt, downloads
+src/zip.js          minimal ZIP writer (Deflate via CompressionStream, stored fallback)
+build.mjs           assembles the actual distributable plugin files
+package.json        maintainer-only FTS-enabled SQLite dependency
+tests/              mock Figma export, ZIP writer, agent prompt, native SQLite schema checks
+```
+
+## Licensing
+
+Figma Superpowers is MIT licensed. `sql.js-fts5` is also MIT licensed; retain
+its license notice when distributing a bundled copy. No token or usage data
+is ever sent to a hosted service by this exporter.
