@@ -370,7 +370,7 @@ CREATE INDEX idx_nodes_page ON nodes(page_id,depth,type);
 CREATE INDEX idx_nodes_type_name ON nodes(type,name);
 CREATE INDEX idx_nodes_component ON nodes(component_key) WHERE component_key IS NOT NULL;
 CREATE TABLE node_variable_bindings(node_id TEXT NOT NULL, field TEXT NOT NULL,
-  variable_id TEXT NOT NULL, PRIMARY KEY(node_id, field, variable_id));
+  variable_id TEXT NOT NULL, PRIMARY KEY(node_id, field, variable_id)) WITHOUT ROWID;
 CREATE INDEX idx_bindings_variable ON node_variable_bindings(variable_id);
 CREATE TABLE node_links(source_id TEXT NOT NULL, target_id TEXT NOT NULL,
   kind TEXT NOT NULL, label TEXT NOT NULL,
@@ -520,7 +520,10 @@ The export was created through Figma Superpowers using the Figma Plugin API.
 - Ask for a current selection context / screenshot when exact visual appearance matters;
   node geometry is not a raster representation and **this export contains no images**.
 - Nodes reference \`parent_id\` and \`page_id\` by Figma IDs, not integer SQLite row IDs.
-- \`properties_json\` holds design/layout/paint/effect and prototype details.
+- \`properties_json\` holds design/layout/paint/effect and prototype details. Variable
+  aliases are NOT inlined here; they live in \`node_variable_bindings\` (which includes
+  nested fields such as \`fills[0].color\`). Empty containers are omitted, so an absent
+  key means "empty".
 - \`node_links\` stores component-instance and prototype-navigation relationships.
 - \`node_variable_bindings\` connects design properties with variable definitions.
 - \`variable_values\` holds values per mode; \`alias_variable_id\` resolves aliases.

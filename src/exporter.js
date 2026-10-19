@@ -72,13 +72,36 @@ const PACK_RICH_FIELDS = [
   'fontName', 'fontSize', 'fontWeight', 'textAlignHorizontal', 'textAlignVertical',
   'lineHeight', 'letterSpacing', 'textAutoResize', 'textCase', 'textDecoration',
   'paragraphSpacing', 'paragraphIndent', 'componentProperties',
-  'componentPropertyDefinitions', 'variantProperties', 'boundVariables',
+  'componentPropertyDefinitions', 'variantProperties',
   'explicitVariableModes', 'reactions', 'flowStartingPoints',
   'layoutGrids', 'gridRowCount', 'gridColumnCount', 'gridCell', 'exportSettings',
   'fillStyleId', 'strokeStyleId', 'effectStyleId', 'gridStyleId', 'textStyleId',
   'description', 'documentationLinks', 'isAsset', 'devStatus', 'locked',
   'relativeTransform', 'constraints', 'overflowDirection'
 ];
+
+/* Variable aliases have a normalized home in `node_variable_bindings`, so the copies
+   embedded in properties_json (top level and inside fills/strokes/effects/layoutGrids)
+   would store the same data twice. Drop exactly those paths after collecting the rows.
+   Aliases nested anywhere else (e.g. componentProperties) have no table home and stay. */
+const PACK_EMBEDDED_BINDING_FIELDS = ['fills', 'strokes', 'effects', 'layoutGrids'];
+
+/* Remove empty containers and empty strings from the serialized property bag: absence
+   already means "empty", and ~53k nodes each carrying `[]`/`{}`/`""` is pure weight. */
+function packPrune(value) {
+  if (Array.isArray(value)) return value.map(packPrune);
+  if (value && typeof value === 'object') {
+    const result = {};
+    Object.keys(value).forEach(function (key) {
+      const item = packPrune(value[key]);
+      if (item === '') return;
+      if (item && typeof item === 'object' && Object.keys(item).length === 0) return;
+      result[key] = item;
+    });
+    return result;
+  }
+  return value;
+}
 
 function packNode(node, parentId, pageId, order, depth) {
   const extra = {};
@@ -87,11 +110,13 @@ function packNode(node, parentId, pageId, order, depth) {
     if (value !== undefined && value !== null) extra[field] = value;
   });
   const bindingRows = [];
-  packBindingRows(extra.boundVariables, node.id, '', bindingRows);
-  ['fills', 'strokes', 'effects', 'layoutGrids'].forEach(function (field) {
+  packBindingRows(packProperty(node, 'boundVariables'), node.id, '', bindingRows);
+  PACK_EMBEDDED_BINDING_FIELDS.forEach(function (field) {
     if (!Array.isArray(extra[field])) return;
     extra[field].forEach(function (item, i) {
-      packBindingRows(item && item.boundVariables, node.id, field + '[' + i + ']', bindingRows);
+      if (!item || typeof item !== 'object') return;
+      packBindingRows(item.boundVariables, node.id, field + '[' + i + ']', bindingRows);
+      delete item.boundVariables;
     });
   });
   const text = node.type === 'TEXT' ? packSafe(node, 'characters', '') : '';
@@ -111,7 +136,7 @@ function packNode(node, parentId, pageId, order, depth) {
     height: packSafe(node, 'height', null),
     text: text,
     component_key: componentKey,
-    properties_json: JSON.stringify(extra)
+    properties_json: JSON.stringify(packPrune(extra))
   };
   const links = [];
   const reactions = extra.reactions;

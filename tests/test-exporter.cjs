@@ -71,5 +71,13 @@ messageHandler = vm.runInContext('packHandleMessage', context);
   assert.ok(data.some(r => r.kind === 'style'));
   const text = data.find(r => r.kind === 'node' && r.data.figma_id === '10:2');
   assert.equal(text.data.text, 'Pay securely');
+  assert.ok(!text.data.properties_json.includes('boundVariables'),
+    'aliases are not duplicated into properties_json (they live in node_variable_bindings)');
+  assert.equal(text.data.properties_json, '{}',
+    'empty containers and empty strings are pruned from properties_json');
+  const frame = data.find(r => r.kind === 'node' && r.data.figma_id === '10:1');
+  assert.equal(frame.data.properties_json, '{}', 'empty fills array is pruned');
+  assert.ok(data.some(r => r.kind === 'binding' && r.data.field === 'fontSize'),
+    'top-level alias still reaches node_variable_bindings');
   console.log('PASS exporter: all pages, nodes, variables, bindings, instance links and styles');
 })().catch(error => { console.error(error); process.exitCode = 1; });

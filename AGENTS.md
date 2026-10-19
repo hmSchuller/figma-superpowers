@@ -60,7 +60,7 @@ The system prompt also contains a **`STRICT CODE GENERATION & EXECUTION RULES` h
 ### `src/exporter.js` — FigmaPack extraction + delta sync (sandbox)
 
 - Iterative (non-recursive) layer walk over `page.loadAsync()`-ed pages with `skipInvisibleInstanceChildren = false`, so hidden instance descendants are included.
-- `packPlain`/`packJSON` sanitize Figma values (drops `figma.mixed`, functions, non-finite numbers; depth-capped) into `properties_json`.
+- `packPlain`/`packJSON` sanitize Figma values (drops `figma.mixed`, functions, non-finite numbers; depth-capped) into `properties_json`. `packNode` then **prunes empty containers and empty strings** (`packPrune` — absence means "empty") and **never inlines variable aliases**: `boundVariables` at the top level and inside `fills`/`strokes`/`effects`/`layoutGrids` is collected into `node_variable_bindings` instead, so each alias is stored once. Aliases nested anywhere else (e.g. `componentProperties`) have no table home and are left in the JSON.
 - **Shared serializers** (used by the export, a report's `created` and a node snapshot so all three emit identical bytes): `packNode`, `packNodeRecords(root, pageId, parentId, position, depth)` (iterative subtree walk), `packCollectionRecords`, `packVariableRecords`, `packStyleRecords`.
 - `packPostBatch` streams `PACK_BATCH` messages of `PACK_BATCH_SIZE: 200` records and **awaits a `PACK_ACK`** per batch → bounded queueing. `PACK_CANCEL` flips `state.cancelled`.
 - Emits record kinds: `page`, `node`, `binding` (`node_variable_bindings`), `link` (`node_links`, instance + prototype), `collection`, `mode`, `variable`, `value`, `style`. Also `PACK_META` (counts, `export_complete`, etc.), `PACK_PROGRESS`, `PACK_DONE`, `PACK_ERROR`.
@@ -70,7 +70,7 @@ The system prompt also contains a **`STRICT CODE GENERATION & EXECUTION RULES` h
 
 ### `src/database.js` — UI iframe (`PACK_SCHEMA`, insert helpers)
 
-- `PACK_SCHEMA`: `metadata`, `pages`, `nodes` (+ indexes), `nodes_fts`, `node_links`, `node_variable_bindings`, `variable_collections`, `variable_modes`, `variables`, `variable_values`, `styles`. Nodes keyed by `figma_id`; parents/pages stored by ID, not repeated paths.
+- `PACK_SCHEMA`: `metadata`, `pages`, `nodes` (+ indexes), `nodes_fts`, `node_links`, `node_variable_bindings`, `variable_collections`, `variable_modes`, `variables`, `variable_values`, `styles`. Nodes keyed by `figma_id`; parents/pages stored by ID, not repeated paths. `node_variable_bindings` is `WITHOUT ROWID` — its composite PK *is* the storage, and `idx_bindings_variable` still serves the by-variable lookup. `properties_json` is load-bearing for size: `boundVariables` is not duplicated into it and empty containers are dropped.
 - `packOpenDatabase` opens `new SQL.Database()` in a single transaction with prepared inserts; `packInsertBatch` maps each record's fields.
 - `packCreateFTS` tries FTS5 (`content='nodes'`, rebuild) and **falls back to FTS4** if unavailable; the choice is recorded as `fts_version` and reflected in the prompt.
 - `packFinish` sets metadata, commits, builds the index, verifies `PRAGMA integrity_check` (`ok`), and returns `{ binary, prompt, fts }`. UI asserts node/page counts match before finishing (`Node/Page count mismatch`).

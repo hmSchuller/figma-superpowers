@@ -141,9 +141,11 @@ WHERE v.name='color/action/primary';
   visible as IDs and are called out in the prompt.
 - No generated code, network calls, credentials, collaboration comments,
   version history, or live synchronization is included.
-- Design properties are compacted into `properties_json`; image bytes and image
-  previews are **not** exported. This keeps the database much smaller than a
-  screenshot archive. Use Copy Selection Context or provide screenshots when
+- Design properties are compacted into `properties_json`. Variable aliases are not
+  repeated there — they are stored once in `node_variable_bindings` (including nested
+  paths like `fills[0].color`) — and empty containers are omitted, so an absent key
+  means "empty". Image bytes and image previews are **not** exported. This keeps the
+  database much smaller than a screenshot archive. Use Copy Selection Context or provide screenshots when
   visual fidelity is essential.
 - SQLite is created in memory. Truly enormous Figma documents can exceed the
   plugin iframe memory budget. A later version could add page-selective
