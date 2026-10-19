@@ -15,18 +15,17 @@ A pure-JavaScript Figma plugin (built `code.js` sandbox + `ui.html` iframe, wire
 | --- | --- |
 | `src/exporter.js` + `src/code.js` | concatenated into root `code.js` |
 | `src/ui.html` + `src/database.js` + embedded `sql.js-fts5` bundle | root `ui.html` |
-| `src/zip.js` (concatenated into the same embed as `src/database.js`) | root `ui.html` |
 | `build.mjs` | also writes `LICENSE-SQLJS.txt` and checks for unreplaced placeholders |
 
 ```sh
 npm install     # fetches the FTS-enabled SQLite asm.js distribution
-npm test        # exporter + zip + prompt + changes + snapshot + envelope (Node) + schema + reconcile (Python)
+npm test        # exporter + prompt + changes + snapshot + envelope (Node) + schema + reconcile (Python)
 npm run build   # writes manifest-adjacent artifacts: code.js, ui.html, LICENSE-SQLJS.txt
 ```
 
 Distribute the built `manifest.json` + `code.js` + `ui.html` (plus `LICENSE` and `LICENSE-SQLJS.txt`) — not the source tree or `node_modules`.
 
-`src/ui.html` contains two placeholders that `build.mjs` fills: `/*__EMBED_SQLITE__*/` (the minified SQLite engine) and `/*__EMBED_PACK_DB__*/` (the contents of `src/database.js` **plus** `src/zip.js`). Keep them, and keep the build's post-check passing.
+`src/ui.html` contains two placeholders that `build.mjs` fills: `/*__EMBED_SQLITE__*/` (the minified SQLite engine) and `/*__EMBED_PACK_DB__*/` (the contents of `src/database.js`). Keep them, and keep the build's post-check passing.
 
 - **Build gotcha:** `build.mjs` injects those libraries via replacer **functions** (`() => text`), not replacement strings. The minified SQLite bundle contains `$&` / `$'` sequences that `String#replace` would expand, re-injecting the placeholder and tripping the guard. Do not "simplify" this back to a string replacement.
 
@@ -76,19 +75,11 @@ The system prompt also contains a **`STRICT CODE GENERATION & EXECUTION RULES` h
 - `packFinish` sets metadata, commits, builds the index, verifies `PRAGMA integrity_check` (`ok`), and returns `{ binary, prompt, fts }`. UI asserts node/page counts match before finishing (`Node/Page count mismatch`).
 - `packAgentPrompt(db, fts, rulesHeader)` generates the Markdown `FIGMAPACK AGENT PROMPT` (consultant role line, counts, table guide, discovery SQL, an `## Applying change reports` section, "local-only variables" caveat, no-images caveat) and appends `rulesHeader` last. `rulesHeader` is optional but the UI always passes `SYSTEM_RULES_HEADER`, so the file prompt carries the same execution contract as the in-plugin system prompt.
 - Shared clipboard envelopes: `CHANGE_REPORT_HEADER`/`_FOOTER`, `NODE_SNAPSHOT_HEADER`/`_FOOTER`, `packWrapEnvelope`, `packEnvelopeVerifies`. These live here (not in `ui.html`) so the UI and the tests share one source of truth for the byte-stable markers and the completeness check.
-- `packDownload` triggers the download clicks. `packFinish` output is handed to `src/zip.js`, which produces `figma_superpowers.zip` containing `figma_superpowers.db` + `FIGMAPACK_AGENT_PROMPT.md`.
-
-### `src/zip.js` — download packaging (UI iframe)
-
-- Hand-rolled minimal ZIP writer: `packCrc32` (table-driven), `packZipBuild` (local file headers + central directory + EOCD, all little-endian), `packDeflateRaw` (`CompressionStream('deflate-raw')`), and `packZip`.
-- `packZip` Deflates each entry only when the result is smaller, otherwise stores it (method 0) — so it degrades gracefully to a valid uncompressed archive where `CompressionStream` is missing.
-- `packZip` is **async**; the UI's `PACK_DONE` handler is `window.onmessage = async function`. Keep it async if you touch the download path.
-- Output naming is fixed by `PACK_ARCHIVE_NAME` (`figma_superpowers`); the Figma file name is *not* used for the artifact name (it only remains as `metadata.file_name`).
-- Pure enough to run under Node: `tests/test-zip.cjs` evaluates the file with `node:vm` and has Python's `zipfile` validate the result.
+- `packDownload(data, filename, contentType)` builds a Blob and triggers a download click. There is **no** packaging step: the UI hands it `packFinish`'s `binary` verbatim (`figma_superpowers.db`), and the prompt is copied to the clipboard instead of shipped as a file.
 
 ### `src/ui.html` — iframe UI
 
-- Buttons: `Evaluate & Scan File` → `Copy System Prompt`; `Copy Selection Context` / `Copy Canvas State`; `Export Complete File to SQLite` (toggles to `Cancel Export`); `Download ZIP`; `Download Prompt`.
+- Buttons: `Evaluate & Scan File` → `Copy System Prompt`; `Copy Selection Context` / `Copy Canvas State`; `Export Complete File to SQLite` (toggles to `Cancel Export`); `Download DB`; `Copy Prompt`.
 - `smartPasteField` paste zone extracts the first ` ```javascript ` block; fallback accepts raw text containing `figma` or starting with `return`.
 - Status tag (`Standard` / `Explorative`) and `packStatus` live region for export progress.
 - Message bridge: `parent.postMessage({ pluginMessage })` → `figma.ui.onmessage`; `figma.ui.postMessage` → `window.onmessage`.
@@ -113,6 +104,6 @@ After a write script, the sandbox emits a `=== FIGMA CHANGE REPORT ===` (changel
 ## Verification
 
 - After any edit to `src/**`, run `npm test` then `npm run build`. A green build means every placeholder resolved and the SQLite license was found.
-- Tests are small but real: `tests/test-exporter.cjs` runs `src/exporter.js` against a mocked Figma API in a `node:vm` sandbox (pages, nodes, bindings, instance links, styles); `tests/test-changes.cjs` drives the `documentchange`/`stylechange` feeds and the cached variable diff; `tests/test-snapshot.cjs` and `tests/test-envelope.cjs` cover the snapshot payload and the byte-stable footers/declared totals; `tests/test-zip.cjs` runs `src/zip.js` the same way and has Python's `zipfile` verify the archive; `tests/test-prompt.cjs` runs `packAgentPrompt` against a stubbed `db` and asserts the role line, counts and appended rules header; `tests/test-schema.py` re-parses `PACK_SCHEMA` and checks native SQLite integrity + FTS5 search; `tests/test-reconcile.py` replays a sample report and snapshot through the documented operations (patch merge, subtree delete, token cascades) and re-checks FTS/integrity.
+- Tests are small but real: `tests/test-exporter.cjs` runs `src/exporter.js` against a mocked Figma API in a `node:vm` sandbox (pages, nodes, bindings, instance links, styles); `tests/test-changes.cjs` drives the `documentchange`/`stylechange` feeds and the cached variable diff; `tests/test-snapshot.cjs` and `tests/test-envelope.cjs` cover the snapshot payload and the byte-stable footers/declared totals; `tests/test-prompt.cjs` runs `packAgentPrompt` against a stubbed `db` and asserts the role line, counts and appended rules header; `tests/test-schema.py` re-parses `PACK_SCHEMA` and checks native SQLite integrity + FTS5 search; `tests/test-reconcile.py` replays a sample report and snapshot through the documented operations (patch merge, subtree delete, token cascades) and re-checks FTS/integrity.
 - Re-read the edited template + its data provider in full; confirm placeholders resolve and headers match.
 - What tests do **not** cover: the live Figma `documentchange`/`stylechange` feeds, iframe SQLite execution (`sql.js-fts5` inside the plugin), download behavior, and the clipboard round-trip. Walk the affected loop (scan → copy → paste-back → report, or export → download → query) manually in Figma before releasing.

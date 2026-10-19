@@ -5,7 +5,8 @@ Adds an **Export Complete File to SQLite** action to the existing
 original Evaluate & Scan, Copy Selection Context, and Tooling Clipboard Bridge
 remain present. Instead of flooding a chat with Figma JSON, the plugin exports
 an agent-oriented **SQLite snapshot** and generates a companion Markdown prompt,
-just like GitPack, delivered as a single `figma_superpowers.zip` archive.
+just like GitPack, delivered as a downloadable `figma_superpowers.db` plus a prompt
+you copy into the chat.
 
 The generated prompt carries the same consultant role and the same
 `STRICT CODE GENERATION & EXECUTION RULES` header as the plugin's inline
@@ -18,11 +19,11 @@ paste-ready ` ```javascript ` blocks instead of loose prose.
 2. Click **Export Complete File to SQLite**. The export explicitly loads all
    pages, walks all layers, collects local variables/modes, and collects local styles.
 3. Wait for the scan and SQLite index generation to finish.
-4. Click **Download ZIP**. The archive holds `figma_superpowers.db` and
-   `FIGMAPACK_AGENT_PROMPT.md` (use **Download Prompt** on its own if you prefer
-   the Markdown by itself). Separate downloads are intentional because some Figma
-   environments restrict automatic downloads.
-5. Extract the archive and upload **both** files to ChatGPT or another LLM and ask
+4. Click **Download DB** to save `figma_superpowers.db`, then click **Copy Prompt**
+   to put the agent prompt (`FIGMAPACK_AGENT_PROMPT.md`) on your clipboard — paste it
+   into a text editor if you want it as a file. The two are separate actions because
+   some Figma environments restrict automatic downloads.
+5. Upload `figma_superpowers.db` to ChatGPT or another LLM, paste the prompt, and ask
    about the screens, design system, accessibility, token usage, components, or
    implementation plan.
 
@@ -76,10 +77,9 @@ larger/slower than a WASM build but avoids external fetches and extra binary
 assets. It falls back to FTS4 if the runtime reports no FTS5 support. The
 companion prompt automatically reflects which search engine was built.
 
-Downloads are bundled into `figma_superpowers.zip` by `src/zip.js`. Entries are
-Deflate-compressed when `CompressionStream('deflate-raw')` is available and
-stored uncompressed otherwise, so the archive is always valid and needs no
-third-party packaging dependency at runtime.
+The database downloads directly as `figma_superpowers.db`. There is no archive or
+packaging step: the iframe hands the SQLite bytes straight to a download, and the
+agent prompt is copied to the clipboard rather than shipped as a second file.
 
 > **Prototype verification status:** `npm test` (Node-based mocked Figma API
 > export + change collector + snapshot + envelope + agent prompt + native;
@@ -165,11 +165,10 @@ manifest.json       existing plugin ID, dynamic page loading and network restric
 src/code.js         original Superpowers clipboard workflow, adapted to dynamic pages
 src/exporter.js     new API extraction + bounded streaming to UI
 src/ui.html         combined Superpowers UI template with FigmaPack buttons
-src/database.js     SQL schema, inserts, full-text index, prompt, downloads
-src/zip.js          minimal ZIP writer (Deflate via CompressionStream, stored fallback)
+src/database.js     SQL schema, inserts, full-text index, prompt, DB download
 build.mjs           assembles the actual distributable plugin files
 package.json        maintainer-only FTS-enabled SQLite dependency
-tests/              mock Figma export/change collector, ZIP writer, agent prompt,
+tests/              mock Figma export/change collector, agent prompt,
                     snapshot + envelope checks, native SQLite schema and reconciliation
 ```
 
