@@ -46,8 +46,8 @@
   <button id="exportBtn" class="export">Export Complete File to SQLite</button>
   <div id="packStatus" role="status" aria-live="polite" class="small">All pages, nodes, local variables and styles.</div>
   <div class="button-pair">
-    <button id="downloadDb" disabled>Download DB</button>
-    <button id="copyPrompt" disabled>Copy Prompt</button>
+    <button id="downloadZip" disabled>Download ZIP</button>
+    <button id="downloadPrompt" disabled>Download Prompt</button>
   </div>
   <hr>
   <label>Tooling Clipboard Bridge</label>
@@ -653,7 +653,8 @@ function packFinish(session, metadata, rulesHeader) {
 }
 
 function packDownload(data, filename, contentType) {
-  const blob = new Blob([data], { type: contentType });
+  const blob = data instanceof Uint8Array ? new Blob([data], { type: contentType })
+    : new Blob([data], { type: contentType });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -662,6 +663,132 @@ function packDownload(data, filename, contentType) {
   link.click();
   link.remove();
   setTimeout(function () { URL.revokeObjectURL(url); }, 15000);
+}
+
+/* Minimal ZIP writer for the FigmaPack download.
+   Runs inside the UI iframe; also exercised directly by tests/test-zip.cjs. */
+let PACK_ZIP_CRC_TABLE = null;
+
+function packCrc32(bytes) {
+  if (!PACK_ZIP_CRC_TABLE) {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      table[n] = c >>> 0;
+    }
+    PACK_ZIP_CRC_TABLE = table;
+  }
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) {
+    crc = (crc >>> 8) ^ PACK_ZIP_CRC_TABLE[(crc ^ bytes[i]) & 0xFF];
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function packDosStamp(date) {
+  const time = ((date.getHours() & 31) << 11) | ((date.getMinutes() & 63) << 5) |
+    (Math.floor(date.getSeconds() / 2) & 31);
+  const day = (((date.getFullYear() - 1980) & 127) << 9) |
+    (((date.getMonth() + 1) & 15) << 5) | (date.getDate() & 31);
+  return { time: time & 0xFFFF, date: day & 0xFFFF };
+}
+
+/* entries: [{ name: string, data: Uint8Array, payload: Uint8Array, method: 0 | 8 }] */
+function packZipBuild(entries) {
+  const chunks = [];
+  let offset = 0;
+  const put = function (bytes) { chunks.push(bytes); offset += bytes.length; };
+  const u16 = function (value) { put(new Uint8Array([value & 0xFF, (value >>> 8) & 0xFF])); };
+  const u32 = function (value) {
+    put(new Uint8Array([value & 0xFF, (value >>> 8) & 0xFF,
+      (value >>> 16) & 0xFF, (value >>> 24) & 0xFF]));
+  };
+  const stamp = packDosStamp(new Date());
+  const directory = [];
+  entries.forEach(function (entry) {
+    const name = new TextEncoder().encode(entry.name);
+    const crc = packCrc32(entry.data);
+    const start = offset;
+    u32(0x04034B50); u16(20); u16(0); u16(entry.method);
+    u16(stamp.time); u16(stamp.date);
+    u32(crc); u32(entry.payload.length); u32(entry.data.length);
+    u16(name.length); u16(0);
+    put(name); put(entry.payload);
+    directory.push({ name: name, entry: entry, crc: crc, start: start });
+  });
+  const directoryStart = offset;
+  directory.forEach(function (item) {
+    u32(0x02014B50); u16(20); u16(20); u16(0); u16(item.entry.method);
+    u16(stamp.time); u16(stamp.date);
+    u32(item.crc); u32(item.entry.payload.length); u32(item.entry.data.length);
+    u16(item.name.length); u16(0); u16(0);
+    u16(0); u16(0); u32(0); u32(item.start);
+    put(item.name);
+  });
+  const directorySize = offset - directoryStart;
+  u32(0x06054B50); u16(0); u16(0);
+  u16(entries.length); u16(entries.length);
+  u32(directorySize); u32(directoryStart); u16(0);
+  const output = new Uint8Array(offset);
+  let cursor = 0;
+  chunks.forEach(function (chunk) { output.set(chunk, cursor); cursor += chunk.length; });
+  return output;
+}
+
+async function packDeflateRaw(bytes) {
+  if (typeof CompressionStream !== 'function') return null;
+  try {
+    const compressed = new Blob([bytes]).stream()
+      .pipeThrough(new CompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(compressed).arrayBuffer());
+  } catch (error) {
+    return null;
+  }
+}
+
+/* entries: [{ name: string, data: Uint8Array | string }] */
+async function packZip(entries) {
+  const prepared = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const data = typeof entry.data === 'string' ? new TextEncoder().encode(entry.data) : entry.data;
+    const deflated = data.length ? await packDeflateRaw(data) : null;
+    if (deflated && deflated.length < data.length) {
+      prepared.push({ name: entry.name, data: data, payload: deflated, method: 8 });
+    } else {
+      prepared.push({ name: entry.name, data: data, payload: data, method: 0 });
+    }
+  }
+  return packZipBuild(prepared);
+}
+
+/* Download naming: superpowers_export_<DESIGN_FILE_NAME>_<YYYYMMDD-HHMMSS>.zip.
+   The design file name is reduced to letters, digits, '-' and '_' so the result is a
+   safe filename on every OS; the local timestamp keeps repeated exports unique. */
+const PACK_EXPORT_PREFIX = 'superpowers_export_';
+const PACK_DB_FILE = 'figma_superpowers.db';
+const PACK_DB_ARCHIVE_FILE = 'figma_superpowers_db.zip';
+const PACK_PROMPT_FILE = 'FIGMAPACK_AGENT_PROMPT.md';
+
+function packExportFileName(designFileName, date) {
+  const pad = function (value) { return (value < 10 ? '0' : '') + value; };
+  const slug = String(designFileName || '').replace(/[^\p{L}\p{N}_-]+/gu, '_')
+    .replace(/_+/g, '_').replace(/^[_-]+|[_-]+$/g, '').slice(0, 80) || 'Untitled';
+  const stamp = date.getFullYear() + pad(date.getMonth() + 1) + pad(date.getDate()) + '-' +
+    pad(date.getHours()) + pad(date.getMinutes()) + pad(date.getSeconds());
+  return PACK_EXPORT_PREFIX + slug + '_' + stamp + '.zip';
+}
+
+/* Nested layout: the outer archive holds the zipped DB plus the prompt Markdown.
+   { binary: Uint8Array, prompt: string } → { name, archive: Uint8Array } */
+async function packExportArchive(files, designFileName, date) {
+  const dbArchive = await packZip([{ name: PACK_DB_FILE, data: files.binary }]);
+  const archive = await packZip([
+    { name: PACK_DB_ARCHIVE_FILE, data: dbArchive },
+    { name: PACK_PROMPT_FILE, data: files.prompt }
+  ]);
+  return { name: packExportFileName(designFileName, date), archive: archive };
 }
 
   </script>
@@ -727,8 +854,8 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
     const statusTag = document.getElementById('statusTag');
     const exportBtn = document.getElementById('exportBtn');
     const packStatus = document.getElementById('packStatus');
-    const downloadDb = document.getElementById('downloadDb');
-    const copyPrompt = document.getElementById('copyPrompt');
+    const downloadZip = document.getElementById('downloadZip');
+    const downloadPrompt = document.getElementById('downloadPrompt');
 
     let PRIMING_PAYLOAD_CACHE = '';
     let LIVE_SELECTION_MD = null;
@@ -736,7 +863,6 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
     let exportFiles = null;
     let exportMetadata = {};
     let snapshotRequest = null;
-    const PACK_DB_NAME = 'figma_superpowers.db';
     const SNAPSHOT_TIMEOUT_MS = 2500;
 
     function send(message) {
@@ -767,8 +893,8 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
       }
       exportSession = null;
       exportFiles = null;
-      downloadDb.disabled = true;
-      copyPrompt.disabled = true;
+      downloadZip.disabled = true;
+      downloadPrompt.disabled = true;
     }
 
     setupBtn.onclick = function () {
@@ -833,8 +959,8 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
       }
       try {
         exportBtn.disabled = true;
-        downloadDb.disabled = true;
-        copyPrompt.disabled = true;
+        downloadZip.disabled = true;
+        downloadPrompt.disabled = true;
         exportFiles = null;
         exportMetadata = {};
         packStatus.textContent = 'Initializing local SQLite engine...';
@@ -848,16 +974,14 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
       } catch (error) { finishError(error); }
     };
 
-    downloadDb.onclick = function () {
-      if (exportFiles) packDownload(exportFiles.binary, PACK_DB_NAME, 'application/x-sqlite3');
-    };
-    copyPrompt.onclick = function () {
-      if (!exportFiles) return;
-      if (!copyTextToClipboard(exportFiles.prompt)) {
-        alert('Clipboard access failed. Please try again.');
-        return;
+    downloadZip.onclick = function () {
+      if (exportFiles) {
+        packDownload(exportFiles.archive, exportFiles.name, 'application/zip');
       }
-      alert('Agent prompt copied! Paste it alongside the DB into your AI chat.');
+    };
+    downloadPrompt.onclick = function () {
+      if (exportFiles) packDownload(exportFiles.prompt,
+        PACK_PROMPT_FILE, 'text/markdown;charset=utf-8');
     };
 
     smartPasteField.onpaste = function (event) {
@@ -875,7 +999,7 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
       }
     };
 
-    window.onmessage = function (event) {
+    window.onmessage = async function (event) {
       const msg = event.data && event.data.pluginMessage;
       if (!msg) return;
       if (msg.type === 'PRIMING_DATA_READY') {
@@ -932,21 +1056,23 @@ You are an interactive Design System Consultant and Plugin API Execution Engine.
       }
       if (msg.type === 'PACK_DONE' && exportSession) {
         try {
-          packStatus.textContent = 'Building search index and verifying SQLite...';
+          packStatus.textContent = 'Building search index, verifying SQLite and zipping...';
           if ((exportSession.counts.node || 0) !== msg.nodes) throw new Error('Node count mismatch');
           if ((exportSession.counts.page || 0) !== msg.pages) throw new Error('Page count mismatch');
           const files = packFinish(exportSession, exportMetadata, SYSTEM_RULES_HEADER);
           exportSession.db.close();
           exportSession = null;
-          exportFiles = { binary: files.binary, prompt: files.prompt, fts: files.fts };
+          const bundle = await packExportArchive(files, exportMetadata.file_name, new Date());
+          exportFiles = { archive: bundle.archive, name: bundle.name,
+            prompt: files.prompt, fts: files.fts };
           exportBtn.className = 'export';
           exportBtn.textContent = 'Export Complete File to SQLite';
           exportBtn.disabled = false;
-          downloadDb.disabled = false;
-          copyPrompt.disabled = false;
+          downloadZip.disabled = false;
+          downloadPrompt.disabled = false;
           packStatus.textContent = 'Ready: ' + msg.nodes.toLocaleString() + ' nodes, ' +
-            msg.pages + ' pages, ' + files.fts.toUpperCase() +
-            ' search. Download the DB, then copy the prompt.';
+            msg.pages + ' pages, ' + files.fts.toUpperCase() + ' search. Download ' +
+            bundle.name + ' (zipped DB + prompt).';
         } catch (error) { finishError(error); }
       }
       if (msg.type === 'PACK_ERROR') finishError(new Error(msg.message));

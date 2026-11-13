@@ -308,7 +308,8 @@ function packFinish(session, metadata, rulesHeader) {
 }
 
 function packDownload(data, filename, contentType) {
-  const blob = new Blob([data], { type: contentType });
+  const blob = data instanceof Uint8Array ? new Blob([data], { type: contentType })
+    : new Blob([data], { type: contentType });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;

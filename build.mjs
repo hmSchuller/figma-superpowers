@@ -14,7 +14,7 @@ const backend = source('exporter.js') + '\n' + source('code.js');
 // Replacer functions, not strings: the embedded libraries contain `$&`/`$'`
 // sequences that String#replace would otherwise expand back into the output.
 const ui = source('ui.html').replace('/*__EMBED_SQLITE__*/', () => sqliteLibrary)
-  .replace('/*__EMBED_PACK_DB__*/', () => source('database.js'));
+  .replace('/*__EMBED_PACK_DB__*/', () => source('database.js') + '\n' + source('zip.js'));
 if (ui.includes('/*__EMBED_SQLITE__*/') || ui.includes('/*__EMBED_PACK_DB__*/')) {
   throw new Error('Unreplaced build placeholders in HTML');
 }
