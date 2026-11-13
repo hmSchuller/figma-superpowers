@@ -19,7 +19,7 @@ paste-ready ` ```javascript ` blocks instead of loose prose.
 2. Click **Export Complete File to SQLite**. The export explicitly loads all
    pages, walks all layers, collects local variables/modes, and collects local styles.
 3. Wait for the scan and SQLite index generation to finish.
-4. Click **Download ZIP**. The file is named
+4. The ZIP downloads automatically when the export finishes. It is named
    `superpowers_export_<DESIGN_FILE_NAME>_<YYYYMMDD-HHMMSS>.zip`, so repeated
    exports never overwrite each other. It holds:
    ```
@@ -27,9 +27,8 @@ paste-ready ` ```javascript ` blocks instead of loose prose.
    ├── figma_superpowers_db.zip      (contains figma_superpowers.db)
    └── FIGMAPACK_AGENT_PROMPT.md
    ```
-   Use **Download Prompt** on its own if you prefer the Markdown by itself.
-   Separate downloads are intentional because some Figma environments restrict
-   automatic downloads.
+   If your Figma environment blocks the automatic download, click
+   **Download ZIP again**, which appears once the export is ready.
 5. Extract the outer archive and upload `figma_superpowers_db.zip` and
    `FIGMAPACK_AGENT_PROMPT.md` to ChatGPT or another LLM (most code-execution
    chats unpack the inner ZIP themselves; extract it first if yours does not), then

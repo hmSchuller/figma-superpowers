@@ -88,7 +88,7 @@ The system prompt also contains a **`STRICT CODE GENERATION & EXECUTION RULES` h
 
 ### `src/ui.html` — iframe UI
 
-- Buttons: `Evaluate & Scan File` → `Copy System Prompt`; `Copy Selection Context` / `Copy Canvas State`; `Export Complete File to SQLite` (toggles to `Cancel Export`); `Download ZIP`; `Download Prompt`.
+- Buttons: `Evaluate & Scan File` → `Copy System Prompt`; `Copy Selection Context` / `Copy Canvas State`; `Export Complete File to SQLite` (toggles to `Cancel Export`); the export ZIP downloads automatically on `PACK_DONE`, and a `hidden` `Download ZIP again` fallback is shown only once an export is ready (no separate prompt download — the prompt is inside the ZIP).
 - `smartPasteField` paste zone extracts the first ` ```javascript ` block; fallback accepts raw text containing `figma` or starting with `return`.
 - Status tag (`Standard` / `Explorative`) and `packStatus` live region for export progress.
 - Message bridge: `parent.postMessage({ pluginMessage })` → `figma.ui.onmessage`; `figma.ui.postMessage` → `window.onmessage`.
